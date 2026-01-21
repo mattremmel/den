@@ -4,4 +4,4 @@ mod frontmatter;
 mod fs;
 
 pub use frontmatter::{ParseError, ParsedNote, parse, serialize};
-pub use fs::{FsError, read_note, write_note};
+pub use fs::{FsError, read_note, scan_notes_directory, write_note};

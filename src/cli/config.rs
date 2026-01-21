@@ -88,7 +88,10 @@ mod tests {
             editor: None,
         };
         let cli_dir = PathBuf::from("/cli/notes");
-        assert_eq!(config.notes_dir(Some(&cli_dir)), PathBuf::from("/cli/notes"));
+        assert_eq!(
+            config.notes_dir(Some(&cli_dir)),
+            PathBuf::from("/cli/notes")
+        );
     }
 
     #[test]

@@ -9,13 +9,13 @@ use anyhow::Result;
 use clap::Parser;
 
 use cli::{
+    Cli, Command,
     config::Config,
     handlers::{
         handle_backlinks, handle_check, handle_edit, handle_index, handle_link, handle_list,
         handle_new, handle_rels, handle_search, handle_show, handle_tag, handle_tags,
         handle_topics, handle_unlink, handle_untag,
     },
-    Cli, Command,
 };
 
 /// Main entry point for the CLI application.

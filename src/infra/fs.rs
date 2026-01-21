@@ -6,6 +6,7 @@ use std::io::{self, Write as IoWrite};
 use std::path::{Path, PathBuf};
 use tempfile::NamedTempFile;
 use thiserror::Error;
+use walkdir::{DirEntry, WalkDir};
 
 /// Errors during file system operations on notes.
 #[derive(Debug, Error)]
@@ -39,6 +40,9 @@ pub enum FsError {
 
     #[error("parent directory does not exist: {path}")]
     ParentNotFound { path: PathBuf },
+
+    #[error("path is not a directory: {path}")]
+    NotADirectory { path: PathBuf },
 }
 
 impl FsError {
@@ -112,6 +116,53 @@ pub fn write_note(path: &Path, note: &Note, body: &str) -> Result<(), FsError> {
     })?;
 
     Ok(())
+}
+
+/// Scans a directory recursively for markdown (.md) files.
+///
+/// Skips hidden files and directories (starting with `.`), including
+/// the `.index/` directory used for the SQLite index.
+///
+/// Returns paths relative to the input directory.
+///
+/// # Errors
+///
+/// Returns `FsError::NotFound` if the directory doesn't exist.
+/// Returns `FsError::NotADirectory` if the path is not a directory.
+pub fn scan_notes_directory(dir: &Path) -> Result<impl Iterator<Item = PathBuf>, FsError> {
+    if !dir.exists() {
+        return Err(FsError::NotFound {
+            path: dir.to_path_buf(),
+        });
+    }
+    if !dir.is_dir() {
+        return Err(FsError::NotADirectory {
+            path: dir.to_path_buf(),
+        });
+    }
+
+    let dir_owned = dir.to_path_buf();
+    let iter = WalkDir::new(dir)
+        .follow_links(true)
+        .into_iter()
+        .filter_entry(|e| e.depth() == 0 || !is_hidden(e))
+        .filter_map(Result::ok)
+        .filter(|e| e.file_type().is_file())
+        .filter(has_md_extension)
+        .map(move |e| e.path().strip_prefix(&dir_owned).unwrap().to_path_buf());
+
+    Ok(iter)
+}
+
+fn is_hidden(entry: &DirEntry) -> bool {
+    entry
+        .file_name()
+        .to_str()
+        .is_some_and(|s| s.starts_with('.'))
+}
+
+fn has_md_extension(entry: &DirEntry) -> bool {
+    entry.path().extension().is_some_and(|e| e == "md")
 }
 
 #[cfg(test)]
@@ -561,5 +612,252 @@ modified: 2024-01-15T10:30:00Z
         let result = read_note(&path).unwrap();
         assert_eq!(result.note.title(), "Long Body");
         assert_eq!(result.body.len(), long_body.len());
+    }
+
+    // ===========================================
+    // scan_notes_directory Tests
+    // ===========================================
+
+    // --- Phase 1: Basic Happy Path ---
+
+    #[test]
+    fn scan_empty_directory_returns_empty_iterator() {
+        let dir = TempDir::new().unwrap();
+
+        let result: Vec<_> = scan_notes_directory(dir.path()).unwrap().collect();
+
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn scan_directory_finds_single_md_file() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("note.md"), "content").unwrap();
+
+        let result: Vec<_> = scan_notes_directory(dir.path()).unwrap().collect();
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0], PathBuf::from("note.md"));
+    }
+
+    #[test]
+    fn scan_directory_finds_multiple_md_files() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("note1.md"), "content").unwrap();
+        fs::write(dir.path().join("note2.md"), "content").unwrap();
+        fs::write(dir.path().join("note3.md"), "content").unwrap();
+
+        let mut result: Vec<_> = scan_notes_directory(dir.path()).unwrap().collect();
+        result.sort();
+
+        assert_eq!(result.len(), 3);
+        assert!(result.contains(&PathBuf::from("note1.md")));
+        assert!(result.contains(&PathBuf::from("note2.md")));
+        assert!(result.contains(&PathBuf::from("note3.md")));
+    }
+
+    // --- Phase 2: File Filtering ---
+
+    #[test]
+    fn scan_ignores_non_md_files() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("note.md"), "content").unwrap();
+        fs::write(dir.path().join("readme.txt"), "content").unwrap();
+        fs::write(dir.path().join("config.json"), "content").unwrap();
+
+        let result: Vec<_> = scan_notes_directory(dir.path()).unwrap().collect();
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0], PathBuf::from("note.md"));
+    }
+
+    #[test]
+    fn scan_ignores_directories() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("note.md"), "content").unwrap();
+        fs::create_dir(dir.path().join("subdir")).unwrap();
+
+        let result: Vec<_> = scan_notes_directory(dir.path()).unwrap().collect();
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0], PathBuf::from("note.md"));
+    }
+
+    #[test]
+    fn scan_finds_md_in_subdirectories() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("root.md"), "content").unwrap();
+        fs::create_dir(dir.path().join("subdir")).unwrap();
+        fs::write(dir.path().join("subdir/nested.md"), "content").unwrap();
+
+        let mut result: Vec<_> = scan_notes_directory(dir.path()).unwrap().collect();
+        result.sort();
+
+        assert_eq!(result.len(), 2);
+        assert!(result.contains(&PathBuf::from("root.md")));
+        assert!(result.contains(&PathBuf::from("subdir/nested.md")));
+    }
+
+    // --- Phase 3: Index Directory Exclusion ---
+
+    #[test]
+    fn scan_skips_index_directory() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("note.md"), "content").unwrap();
+        fs::create_dir(dir.path().join(".index")).unwrap();
+        fs::write(dir.path().join(".index/should-skip.md"), "content").unwrap();
+
+        let result: Vec<_> = scan_notes_directory(dir.path()).unwrap().collect();
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0], PathBuf::from("note.md"));
+    }
+
+    #[test]
+    fn scan_skips_nested_index_contents() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("note.md"), "content").unwrap();
+        fs::create_dir(dir.path().join(".index")).unwrap();
+        fs::write(dir.path().join(".index/notes.db"), "content").unwrap();
+        fs::create_dir(dir.path().join(".index/cache")).unwrap();
+        fs::write(dir.path().join(".index/cache/temp.md"), "content").unwrap();
+
+        let result: Vec<_> = scan_notes_directory(dir.path()).unwrap().collect();
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0], PathBuf::from("note.md"));
+    }
+
+    // --- Phase 4: Hidden Files/Directories ---
+
+    #[test]
+    fn scan_skips_hidden_directories() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("note.md"), "content").unwrap();
+        fs::create_dir(dir.path().join(".git")).unwrap();
+        fs::write(dir.path().join(".git/config.md"), "content").unwrap();
+        fs::create_dir(dir.path().join(".hidden")).unwrap();
+        fs::write(dir.path().join(".hidden/secret.md"), "content").unwrap();
+
+        let result: Vec<_> = scan_notes_directory(dir.path()).unwrap().collect();
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0], PathBuf::from("note.md"));
+    }
+
+    #[test]
+    fn scan_skips_hidden_files() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("note.md"), "content").unwrap();
+        fs::write(dir.path().join(".hidden.md"), "content").unwrap();
+        fs::write(dir.path().join(".DS_Store"), "content").unwrap();
+
+        let result: Vec<_> = scan_notes_directory(dir.path()).unwrap().collect();
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0], PathBuf::from("note.md"));
+    }
+
+    // --- Phase 5: Error Handling ---
+
+    #[test]
+    fn scan_nonexistent_directory_returns_error() {
+        let path = Path::new("/nonexistent/directory");
+
+        let result = scan_notes_directory(path);
+
+        assert!(matches!(result, Err(FsError::NotFound { .. })));
+    }
+
+    #[test]
+    fn scan_file_as_directory_returns_error() {
+        let dir = TempDir::new().unwrap();
+        let file_path = dir.path().join("file.txt");
+        fs::write(&file_path, "content").unwrap();
+
+        let result = scan_notes_directory(&file_path);
+
+        assert!(matches!(result, Err(FsError::NotADirectory { .. })));
+    }
+
+    // --- Phase 6: Path Semantics ---
+
+    #[test]
+    fn scan_returns_paths_relative_to_input() {
+        let dir = TempDir::new().unwrap();
+        fs::create_dir(dir.path().join("deep")).unwrap();
+        fs::create_dir(dir.path().join("deep/nested")).unwrap();
+        fs::write(dir.path().join("deep/nested/note.md"), "content").unwrap();
+
+        let result: Vec<_> = scan_notes_directory(dir.path()).unwrap().collect();
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0], PathBuf::from("deep/nested/note.md"));
+    }
+
+    #[test]
+    fn scan_handles_absolute_path_input() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("note.md"), "content").unwrap();
+        let abs_path = dir.path().canonicalize().unwrap();
+
+        let result: Vec<_> = scan_notes_directory(&abs_path).unwrap().collect();
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0], PathBuf::from("note.md"));
+    }
+
+    #[test]
+    fn scan_handles_relative_path_input() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("note.md"), "content").unwrap();
+
+        // TempDir paths are already effectively relative from their perspective
+        let result: Vec<_> = scan_notes_directory(dir.path()).unwrap().collect();
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0], PathBuf::from("note.md"));
+    }
+
+    // --- Phase 7: Edge Cases ---
+
+    #[test]
+    #[cfg(unix)]
+    fn scan_handles_symlinks_to_files() {
+        use std::os::unix::fs::symlink;
+
+        let dir = TempDir::new().unwrap();
+        let original = dir.path().join("original.md");
+        fs::write(&original, "content").unwrap();
+        symlink(&original, dir.path().join("linked.md")).unwrap();
+
+        let mut result: Vec<_> = scan_notes_directory(dir.path()).unwrap().collect();
+        result.sort();
+
+        assert_eq!(result.len(), 2);
+        assert!(result.contains(&PathBuf::from("original.md")));
+        assert!(result.contains(&PathBuf::from("linked.md")));
+    }
+
+    #[test]
+    fn scan_handles_unicode_filenames() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("日記.md"), "content").unwrap();
+        fs::write(dir.path().join("заметки.md"), "content").unwrap();
+
+        let result: Vec<_> = scan_notes_directory(dir.path()).unwrap().collect();
+
+        assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn scan_handles_spaces_in_filenames() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("my notes.md"), "content").unwrap();
+        fs::write(dir.path().join("another file with spaces.md"), "content").unwrap();
+
+        let result: Vec<_> = scan_notes_directory(dir.path()).unwrap().collect();
+
+        assert_eq!(result.len(), 2);
     }
 }
