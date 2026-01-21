@@ -43,6 +43,9 @@ pub enum FsError {
 
     #[error("path is not a directory: {path}")]
     NotADirectory { path: PathBuf },
+
+    #[error("invalid encoding in {path}: {encoding}")]
+    InvalidEncoding { path: PathBuf, encoding: String },
 }
 
 impl FsError {
@@ -65,12 +68,47 @@ impl FsError {
 ///
 /// Returns `FsError::NotFound` if the file doesn't exist.
 /// Returns `FsError::PermissionDenied` if access is denied.
+/// Returns `FsError::InvalidEncoding` if the file is not valid UTF-8 or uses unsupported encoding.
 /// Returns `FsError::Parse` if the file content is invalid.
 pub fn read_note(path: &Path) -> Result<ParsedNote, FsError> {
-    let content = std::fs::read_to_string(path).map_err(|e| FsError::from_io(path, e))?;
+    let bytes = std::fs::read(path).map_err(|e| FsError::from_io(path, e))?;
+
+    // Check for non-UTF-8 BOMs
+    if bytes.starts_with(&[0xFF, 0xFE]) {
+        return Err(FsError::InvalidEncoding {
+            path: path.into(),
+            encoding: "UTF-16 LE detected (byte order mark FF FE); convert to UTF-8".into(),
+        });
+    }
+    if bytes.starts_with(&[0xFE, 0xFF]) {
+        return Err(FsError::InvalidEncoding {
+            path: path.into(),
+            encoding: "UTF-16 BE detected (byte order mark FE FF); convert to UTF-8".into(),
+        });
+    }
+
+    // Convert to UTF-8
+    let content = String::from_utf8(bytes).map_err(|e| FsError::InvalidEncoding {
+        path: path.into(),
+        encoding: format!("invalid UTF-8 at byte {}", e.utf8_error().valid_up_to()),
+    })?;
 
     // Strip UTF-8 BOM if present
     let content = content.strip_prefix('\u{FEFF}').unwrap_or(&content);
+
+    // Check for lone CR (old Mac format) - reject even if mixed with CRLF
+    let has_lone_cr = content
+        .as_bytes()
+        .windows(2)
+        .any(|w| w[0] == b'\r' && w[1] != b'\n')
+        || content.as_bytes().last() == Some(&b'\r');
+    if has_lone_cr {
+        return Err(FsError::InvalidEncoding {
+            path: path.into(),
+            encoding: "CR-only line endings detected (old Mac format); convert to LF or CRLF"
+                .into(),
+        });
+    }
 
     parse(content).map_err(|e| FsError::Parse {
         path: path.into(),
@@ -859,5 +897,187 @@ modified: 2024-01-15T10:30:00Z
         let result: Vec<_> = scan_notes_directory(dir.path()).unwrap().collect();
 
         assert_eq!(result.len(), 2);
+    }
+
+    // ===========================================
+    // File Edge Cases: Encoding and Line Endings
+    // ===========================================
+
+    // --- Cycle 1: Invalid UTF-8 Detection ---
+
+    #[test]
+    fn read_note_returns_error_for_invalid_utf8() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("invalid-utf8.md");
+        // Invalid UTF-8 sequence: 0xFF is never valid in UTF-8
+        let invalid_bytes: &[u8] = &[0x2D, 0x2D, 0x2D, 0x0A, 0xFF, 0xFE, 0x0A];
+        fs::write(&path, invalid_bytes).unwrap();
+
+        let result = read_note(&path);
+
+        match result {
+            Err(FsError::InvalidEncoding {
+                path: err_path,
+                encoding,
+            }) => {
+                assert_eq!(err_path, path);
+                assert!(encoding.contains("UTF-8") || encoding.contains("byte"));
+            }
+            other => panic!("Expected InvalidEncoding, got {:?}", other),
+        }
+    }
+
+    // --- Cycle 2: UTF-16 BOM Detection ---
+
+    #[test]
+    fn read_note_rejects_utf16_le_bom() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("utf16-le.md");
+        // UTF-16 LE BOM: FF FE
+        let bytes: &[u8] = &[0xFF, 0xFE, 0x2D, 0x00, 0x2D, 0x00];
+        fs::write(&path, bytes).unwrap();
+
+        let result = read_note(&path);
+
+        match result {
+            Err(FsError::InvalidEncoding { encoding, .. }) => {
+                assert!(
+                    encoding.contains("UTF-16 LE"),
+                    "Expected UTF-16 LE message, got: {}",
+                    encoding
+                );
+            }
+            other => panic!("Expected InvalidEncoding, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn read_note_rejects_utf16_be_bom() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("utf16-be.md");
+        // UTF-16 BE BOM: FE FF
+        let bytes: &[u8] = &[0xFE, 0xFF, 0x00, 0x2D, 0x00, 0x2D];
+        fs::write(&path, bytes).unwrap();
+
+        let result = read_note(&path);
+
+        match result {
+            Err(FsError::InvalidEncoding { encoding, .. }) => {
+                assert!(
+                    encoding.contains("UTF-16 BE"),
+                    "Expected UTF-16 BE message, got: {}",
+                    encoding
+                );
+            }
+            other => panic!("Expected InvalidEncoding, got {:?}", other),
+        }
+    }
+
+    // --- Cycle 3: Mixed Line Endings in Frontmatter ---
+
+    #[test]
+    fn read_note_handles_mixed_line_endings_in_frontmatter() {
+        let dir = TempDir::new().unwrap();
+        // Mix of CRLF and LF in frontmatter
+        let content = "---\r\nid: 01HQ3K5M7NXJK4QZPW8V2R6T9Y\ntitle: Mixed Endings\r\ncreated: 2024-01-15T10:30:00Z\nmodified: 2024-01-15T10:30:00Z\r\n---\nBody content.";
+        let path = create_test_file(&dir, content);
+
+        let result = read_note(&path).unwrap();
+
+        assert_eq!(result.note.title(), "Mixed Endings");
+        assert_eq!(result.body, "Body content.");
+    }
+
+    // --- Cycle 4: Lone CR Line Endings ---
+
+    #[test]
+    fn read_note_rejects_lone_cr_line_endings() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("old-mac.md");
+        // Old Mac format: lines separated by CR only
+        let content = "---\rid: 01HQ3K5M7NXJK4QZPW8V2R6T9Y\rtitle: Old Mac\rcreated: 2024-01-15T10:30:00Z\rmodified: 2024-01-15T10:30:00Z\r---\rBody";
+        fs::write(&path, content).unwrap();
+
+        let result = read_note(&path);
+
+        match result {
+            Err(FsError::InvalidEncoding { encoding, .. }) => {
+                assert!(
+                    encoding.contains("CR") || encoding.contains("line ending"),
+                    "Expected CR line ending message, got: {}",
+                    encoding
+                );
+            }
+            other => panic!("Expected InvalidEncoding, got {:?}", other),
+        }
+    }
+
+    // --- Cycle 5: Body Line Ending Preservation ---
+
+    #[test]
+    fn roundtrip_preserves_crlf_in_body() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("crlf-body.md");
+        let (note, _) = create_test_note_and_body();
+        let body_with_crlf = "Line one\r\nLine two\r\nLine three";
+
+        write_note(&path, &note, body_with_crlf).unwrap();
+        let parsed = read_note(&path).unwrap();
+
+        assert_eq!(parsed.body, body_with_crlf);
+    }
+
+    #[test]
+    fn roundtrip_preserves_mixed_line_endings_in_body() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("mixed-body.md");
+        let (note, _) = create_test_note_and_body();
+        let body_with_mixed = "Line one\nLine two\r\nLine three\nLine four";
+
+        write_note(&path, &note, body_with_mixed).unwrap();
+        let parsed = read_note(&path).unwrap();
+
+        assert_eq!(parsed.body, body_with_mixed);
+    }
+
+    // --- Cycle 6: Trailing Newline Variations ---
+
+    #[test]
+    fn read_note_handles_file_without_trailing_newline() {
+        let dir = TempDir::new().unwrap();
+        let content = "---\nid: 01HQ3K5M7NXJK4QZPW8V2R6T9Y\ntitle: No Trailing\ncreated: 2024-01-15T10:30:00Z\nmodified: 2024-01-15T10:30:00Z\n---\nBody without trailing newline";
+        let path = create_test_file(&dir, content);
+
+        let result = read_note(&path).unwrap();
+
+        assert_eq!(result.note.title(), "No Trailing");
+        assert_eq!(result.body, "Body without trailing newline");
+    }
+
+    #[test]
+    fn roundtrip_preserves_no_trailing_newline() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("no-trailing.md");
+        let (note, _) = create_test_note_and_body();
+        let body = "Body without trailing newline";
+
+        write_note(&path, &note, body).unwrap();
+        let parsed = read_note(&path).unwrap();
+
+        assert_eq!(parsed.body, body);
+        assert!(!parsed.body.ends_with('\n'));
+    }
+
+    #[test]
+    fn roundtrip_preserves_multiple_trailing_newlines() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("multi-trailing.md");
+        let (note, _) = create_test_note_and_body();
+        let body = "Body with multiple trailing newlines\n\n\n";
+
+        write_note(&path, &note, body).unwrap();
+        let parsed = read_note(&path).unwrap();
+
+        assert_eq!(parsed.body, body);
     }
 }
