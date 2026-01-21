@@ -1040,4 +1040,174 @@ tags:
         assert!(!yaml.contains("tags:"));
         assert!(!yaml.contains("links:"));
     }
+
+    // ===========================================
+    // Phase 8: Edge Cases & Spec Compliance
+    // ===========================================
+
+    #[test]
+    fn serde_roundtrip_link_with_context() {
+        let target: NoteId = "01HQ4A2R9PXJK4QZPW8V2R6T9Y".parse().unwrap();
+        let link =
+            Link::with_context(target, vec!["see-also"], "Related discussion from 2024").unwrap();
+
+        let note = Note::builder(
+            test_note_id(),
+            "Test",
+            test_datetime(),
+            test_modified_datetime(),
+        )
+        .links(vec![link])
+        .build()
+        .unwrap();
+
+        let yaml = serde_yaml::to_string(&note).unwrap();
+        assert!(
+            yaml.contains("note:"),
+            "context should serialize as 'note' field"
+        );
+
+        let parsed: Note = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(note, parsed);
+        assert_eq!(
+            parsed.links()[0].context(),
+            Some("Related discussion from 2024")
+        );
+    }
+
+    #[test]
+    fn serde_roundtrip_link_with_multiple_rels() {
+        let target: NoteId = "01HQ4A2R9PXJK4QZPW8V2R6T9Y".parse().unwrap();
+        let link = Link::new(target, vec!["manager-of", "mentor-to"]).unwrap();
+
+        let note = Note::builder(
+            test_note_id(),
+            "Test",
+            test_datetime(),
+            test_modified_datetime(),
+        )
+        .links(vec![link])
+        .build()
+        .unwrap();
+
+        let yaml = serde_yaml::to_string(&note).unwrap();
+        let parsed: Note = serde_yaml::from_str(&yaml).unwrap();
+
+        assert_eq!(parsed.links()[0].rel().len(), 2);
+        assert_eq!(parsed.links()[0].rel()[0].as_str(), "manager-of");
+        assert_eq!(parsed.links()[0].rel()[1].as_str(), "mentor-to");
+    }
+
+    #[test]
+    fn deserialize_from_design_spec_example_with_links() {
+        let yaml = r#"
+id: 01HQ3K5M7NXJK4QZPW8V2R6T9Y
+title: API Design Notes
+created: 2024-01-15T10:30:00Z
+modified: 2024-01-15T10:30:00Z
+description: Notes on REST API design principles
+topics:
+  - software/architecture
+  - reference
+aliases:
+  - REST API Guide
+tags:
+  - draft
+links:
+  - id: 01HQ4A2R9PXJK4QZPW8V2R6T9Y
+    rel:
+      - parent
+  - id: 01HQ5B3S0QYJK5RAQX9W3S7T0Z
+    rel:
+      - see-also
+      - related
+    note: Alternative approach
+"#;
+        let note: Note = serde_yaml::from_str(yaml).unwrap();
+
+        assert_eq!(note.links().len(), 2);
+        assert_eq!(note.links()[0].rel().len(), 1);
+        assert_eq!(note.links()[1].rel().len(), 2);
+        assert_eq!(note.links()[1].context(), Some("Alternative approach"));
+    }
+
+    #[test]
+    fn builder_allows_duplicate_links_to_same_target() {
+        let target: NoteId = "01HQ4A2R9PXJK4QZPW8V2R6T9Y".parse().unwrap();
+        let link1 = Link::new(target.clone(), vec!["parent"]).unwrap();
+        let link2 = Link::new(target, vec!["source"]).unwrap();
+
+        let note = Note::builder(
+            test_note_id(),
+            "Test",
+            test_datetime(),
+            test_modified_datetime(),
+        )
+        .links(vec![link1, link2])
+        .build()
+        .unwrap();
+
+        // Both links preserved (not deduplicated like topics/tags)
+        assert_eq!(note.links().len(), 2);
+    }
+
+    #[test]
+    fn aliases_filter_out_empty_strings() {
+        let aliases = vec![
+            "Valid Alias".to_string(),
+            "".to_string(),
+            "   ".to_string(),
+            "Another Valid".to_string(),
+        ];
+
+        let note = Note::builder(
+            test_note_id(),
+            "Test",
+            test_datetime(),
+            test_modified_datetime(),
+        )
+        .aliases(aliases)
+        .build()
+        .unwrap();
+
+        assert_eq!(note.aliases().len(), 2);
+        assert_eq!(note.aliases()[0], "Valid Alias");
+        assert_eq!(note.aliases()[1], "Another Valid");
+    }
+
+    #[test]
+    fn created_equals_modified_is_valid() {
+        let timestamp = test_datetime();
+        let note = Note::new(test_note_id(), "New Note", timestamp, timestamp).unwrap();
+
+        assert_eq!(note.created(), note.modified());
+    }
+
+    #[test]
+    fn title_whitespace_is_trimmed() {
+        let note = Note::new(
+            test_note_id(),
+            "  API Design  ",
+            test_datetime(),
+            test_modified_datetime(),
+        )
+        .unwrap();
+
+        assert_eq!(note.title(), "API Design");
+    }
+
+    #[test]
+    fn description_whitespace_is_trimmed() {
+        let note = Note::builder(
+            test_note_id(),
+            "Test",
+            test_datetime(),
+            test_modified_datetime(),
+        )
+        .description(Some("  A description with spaces  "))
+        .build()
+        .unwrap();
+
+        assert_eq!(note.description(), Some("A description with spaces"));
+    }
 }
