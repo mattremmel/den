@@ -60,7 +60,9 @@ impl Rel {
         let normalized = s.trim().to_lowercase();
 
         if normalized.is_empty() {
-            return Err(ParseRelError("relationship type cannot be empty".to_string()));
+            return Err(ParseRelError(
+                "relationship type cannot be empty".to_string(),
+            ));
         }
 
         if !normalized
