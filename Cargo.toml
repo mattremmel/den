@@ -1,0 +1,12 @@
+[package]
+name = "den"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "den"
+path = "src/lib.rs"
+
+[[bin]]
+name = "den"
+path = "src/main.rs"
