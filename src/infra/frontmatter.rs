@@ -136,7 +136,11 @@ fn find_closing_delimiter(content: &str) -> Result<usize, ParseError> {
                 if after >= bytes.len() {
                     // EOF after ---
                     return Ok(pos);
-                } else if bytes[after] == b'\n' || (bytes[after] == b'\r' && after + 1 < bytes.len() && bytes[after + 1] == b'\n') {
+                } else if bytes[after] == b'\n'
+                    || (bytes[after] == b'\r'
+                        && after + 1 < bytes.len()
+                        && bytes[after + 1] == b'\n')
+                {
                     // newline after ---
                     return Ok(pos);
                 }
@@ -199,10 +203,7 @@ modified: 2024-01-15T10:30:00Z
 
         let result = parse(content).unwrap();
         assert_eq!(result.note.title(), "API Design");
-        assert_eq!(
-            result.note.id().to_string(),
-            "01HQ3K5M7NXJK4QZPW8V2R6T9Y"
-        );
+        assert_eq!(result.note.id().to_string(), "01HQ3K5M7NXJK4QZPW8V2R6T9Y");
     }
 
     #[test]
@@ -500,10 +501,7 @@ More content here.
 
         // Check required fields
         assert_eq!(result.note.title(), "Complete Note");
-        assert_eq!(
-            result.note.id().to_string(),
-            "01HQ3K5M7NXJK4QZPW8V2R6T9Y"
-        );
+        assert_eq!(result.note.id().to_string(), "01HQ3K5M7NXJK4QZPW8V2R6T9Y");
 
         // Check optional fields
         assert_eq!(
@@ -729,7 +727,10 @@ This document describes REST API design principles.
     fn roundtrip_with_tags() {
         let (created, modified) = test_timestamps();
         let note = Note::builder(test_note_id(), "Test", created, modified)
-            .tags(vec![Tag::new("draft").unwrap(), Tag::new("important").unwrap()])
+            .tags(vec![
+                Tag::new("draft").unwrap(),
+                Tag::new("important").unwrap(),
+            ])
             .build()
             .unwrap();
 
@@ -777,7 +778,10 @@ This document describes REST API design principles.
                 Topic::new("reference").unwrap(),
             ])
             .aliases(vec!["Full Test".to_string(), "Complete Test".to_string()])
-            .tags(vec![Tag::new("draft").unwrap(), Tag::new("important").unwrap()])
+            .tags(vec![
+                Tag::new("draft").unwrap(),
+                Tag::new("important").unwrap(),
+            ])
             .links(vec![
                 Link::new(target1, vec!["parent"]).unwrap(),
                 Link::with_context(target2, vec!["see-also"], "Related discussion").unwrap(),
@@ -972,14 +976,8 @@ More text after.
         let tags_pos = serialized.find("tags:").unwrap();
         let links_pos = serialized.find("links:").unwrap();
 
-        assert!(
-            id_pos < title_pos,
-            "id should come before title"
-        );
-        assert!(
-            title_pos < created_pos,
-            "title should come before created"
-        );
+        assert!(id_pos < title_pos, "id should come before title");
+        assert!(title_pos < created_pos, "title should come before created");
         assert!(
             created_pos < modified_pos,
             "created should come before modified"
@@ -996,14 +994,8 @@ More text after.
             topics_pos < aliases_pos,
             "topics should come before aliases"
         );
-        assert!(
-            aliases_pos < tags_pos,
-            "aliases should come before tags"
-        );
-        assert!(
-            tags_pos < links_pos,
-            "tags should come before links"
-        );
+        assert!(aliases_pos < tags_pos, "aliases should come before tags");
+        assert!(tags_pos < links_pos, "tags should come before links");
     }
 
     // ===========================================
@@ -1029,6 +1021,9 @@ More text after.
         let serialized2 = serialize(&parsed1.note, &parsed1.body);
 
         // Output should be stable
-        assert_eq!(serialized1, serialized2, "Double roundtrip should produce identical output");
+        assert_eq!(
+            serialized1, serialized2,
+            "Double roundtrip should produce identical output"
+        );
     }
 }
