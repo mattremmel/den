@@ -244,12 +244,172 @@ fn merge_or_add_link(existing: &[Link], new: &Link) -> (Vec<Link>, bool) {
     }
 }
 
-pub fn handle_unlink(_args: &UnlinkArgs) -> Result<()> {
-    println!("unlink: not yet implemented");
+/// Remove a link to a specific target from existing links.
+/// Returns (updated_links, changed) where changed is true if a link was removed.
+fn remove_link(existing: &[Link], target_id: &NoteId) -> (Vec<Link>, bool) {
+    let mut links = existing.to_vec();
+
+    if let Some(pos) = links.iter().position(|l| l.target() == target_id) {
+        links.remove(pos);
+        (links, true)
+    } else {
+        (links, false)
+    }
+}
+
+pub fn handle_unlink(args: &UnlinkArgs, notes_dir: &Path) -> Result<()> {
+    // 1. Open index
+    let db_path = index_db_path(notes_dir);
+    let index = SqliteIndex::open(&db_path)
+        .with_context(|| format!("failed to open index at {}", db_path.display()))?;
+
+    // 2. Resolve source note (must exist)
+    let source_note = match resolve_note(&index, &args.source)? {
+        ResolveResult::Unique(note) => note,
+        ResolveResult::Ambiguous(notes) => {
+            print_ambiguous_notes(&args.source, &notes);
+            bail!("ambiguous source note identifier");
+        }
+        ResolveResult::NotFound => {
+            bail!("source note not found: '{}'", args.source);
+        }
+    };
+
+    // 3. Resolve target (allow ID-only for broken links)
+    let target_id: NoteId = match resolve_note(&index, &args.target)? {
+        ResolveResult::Unique(note) => note.id().clone(),
+        ResolveResult::Ambiguous(notes) => {
+            print_ambiguous_notes(&args.target, &notes);
+            bail!("ambiguous target note identifier");
+        }
+        ResolveResult::NotFound => args
+            .target
+            .parse::<NoteId>()
+            .map_err(|_| {
+                anyhow::anyhow!(
+                    "target note not found and not a valid note ID: '{}'",
+                    args.target
+                )
+            })?,
+    };
+
+    // 4. Read source file
+    let file_path = notes_dir.join(source_note.path());
+    let parsed = read_note(&file_path)
+        .with_context(|| format!("failed to read note: {}", file_path.display()))?;
+
+    // 5. Remove link
+    let (updated_links, changed) = remove_link(parsed.note.links(), &target_id);
+
+    if !changed {
+        println!(
+            "No link found: '{}' [{}] -> [{}]",
+            parsed.note.title(),
+            parsed.note.id().prefix(),
+            target_id.prefix()
+        );
+        return Ok(());
+    }
+
+    // 6. Rebuild note with updated links
+    let now = Utc::now();
+    let updated_note = Note::builder(
+        parsed.note.id().clone(),
+        parsed.note.title(),
+        parsed.note.created(),
+        now,
+    )
+    .description(parsed.note.description().map(String::from))
+    .topics(parsed.note.topics().to_vec())
+    .aliases(parsed.note.aliases().to_vec())
+    .tags(parsed.note.tags().to_vec())
+    .links(updated_links)
+    .build()
+    .with_context(|| "failed to rebuild note")?;
+
+    // 7. Write atomically
+    write_note(&file_path, &updated_note, &parsed.body)
+        .with_context(|| "failed to write updated note")?;
+
+    // 8. Update index
+    if let Ok(mut idx) = SqliteIndex::open(&db_path) {
+        let builder = IndexBuilder::new(notes_dir.to_path_buf());
+        let _ = builder.incremental_update(&mut idx);
+    }
+
+    // 9. Print success
+    println!(
+        "Removed link: '{}' [{}] -> [{}]",
+        updated_note.title(),
+        updated_note.id().prefix(),
+        target_id.prefix()
+    );
+
     Ok(())
 }
 
 pub fn handle_rels(_args: &RelsArgs) -> Result<()> {
     println!("rels: not yet implemented");
     Ok(())
+}
+
+#[cfg(test)]
+mod remove_link_tests {
+    use super::*;
+
+    fn test_note_id(suffix: &str) -> NoteId {
+        format!("01HQ3K5M7NXJK4QZPW{}", suffix)
+            .parse()
+            .unwrap()
+    }
+
+    #[test]
+    fn remove_link_finds_and_removes_matching_target() {
+        let target_id = test_note_id("8V2R6TAA");
+        let links = vec![Link::new(target_id.clone(), vec!["see-also"]).unwrap()];
+
+        let (result, changed) = remove_link(&links, &target_id);
+
+        assert!(changed);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn remove_link_returns_false_when_target_not_found() {
+        let existing_id = test_note_id("8V2R6TBB");
+        let missing_id = test_note_id("8V2R6TCC");
+        let links = vec![Link::new(existing_id, vec!["parent"]).unwrap()];
+
+        let (result, changed) = remove_link(&links, &missing_id);
+
+        assert!(!changed);
+        assert_eq!(result.len(), 1);
+    }
+
+    #[test]
+    fn remove_link_preserves_other_links() {
+        let target_id = test_note_id("8V2R6TDD");
+        let other_id = test_note_id("8V2R6TEE");
+        let links = vec![
+            Link::new(target_id.clone(), vec!["see-also"]).unwrap(),
+            Link::new(other_id.clone(), vec!["parent"]).unwrap(),
+        ];
+
+        let (result, changed) = remove_link(&links, &target_id);
+
+        assert!(changed);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].target(), &other_id);
+    }
+
+    #[test]
+    fn remove_link_handles_empty_links() {
+        let target_id = test_note_id("8V2R6TFF");
+        let links: Vec<Link> = vec![];
+
+        let (result, changed) = remove_link(&links, &target_id);
+
+        assert!(!changed);
+        assert!(result.is_empty());
+    }
 }

@@ -2328,7 +2328,7 @@ mod handle_backlinks_tests {
 
 mod handle_link_tests {
     use super::*;
-    use crate::cli::LinkArgs;
+    use crate::cli::{LinkArgs, UnlinkArgs};
     use crate::index::{IndexBuilder, SqliteIndex};
     use crate::infra::read_note;
     use tempfile::TempDir;
@@ -2850,5 +2850,141 @@ Body content.
 
         let after = read_note(&file_path).unwrap();
         assert_eq!(after.body, original_body);
+    }
+
+    // ===========================================
+    // handle_unlink Tests
+    // ===========================================
+
+    fn test_unlink_args(source: &str, target: &str) -> UnlinkArgs {
+        UnlinkArgs {
+            source: source.to_string(),
+            target: target.to_string(),
+        }
+    }
+
+    fn setup_linked_notes() -> TempDir {
+        let dir = setup_two_notes();
+        // Add a link from source to target
+        let args = test_link_args("Source Note", "Target Note", vec!["parent"]);
+        handle_link(&args, dir.path()).unwrap();
+        dir
+    }
+
+    #[test]
+    fn handle_unlink_removes_link_from_note_file() {
+        let dir = setup_linked_notes();
+        let args = test_unlink_args("Source Note", "Target Note");
+        let result = handle_unlink(&args, dir.path());
+        assert!(result.is_ok());
+
+        // Verify link was removed
+        let file_path = dir.path().join("01HQ3K5M7N-source-note.md");
+        let parsed = read_note(&file_path).unwrap();
+        assert!(parsed.note.links().is_empty());
+    }
+
+    #[test]
+    fn handle_unlink_link_not_found_returns_ok() {
+        let dir = setup_two_notes();
+        // Source has no links to target
+        let args = test_unlink_args("Source Note", "Target Note");
+        let result = handle_unlink(&args, dir.path());
+        assert!(result.is_ok()); // Not an error, just no-op
+    }
+
+    #[test]
+    fn handle_unlink_source_not_found_returns_error() {
+        let dir = setup_two_notes();
+        let args = test_unlink_args("Nonexistent Note", "Target Note");
+        let result = handle_unlink(&args, dir.path());
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("not found"));
+    }
+
+    #[test]
+    fn handle_unlink_preserves_other_links() {
+        let dir = setup_linked_notes();
+        // Add another link
+        let link_args = test_link_args("Source Note", "Source Note", vec!["self-ref"]);
+        handle_link(&link_args, dir.path()).unwrap();
+
+        // Unlink only the parent link to target
+        let args = test_unlink_args("Source Note", "Target Note");
+        handle_unlink(&args, dir.path()).unwrap();
+
+        // Self-link should remain
+        let file_path = dir.path().join("01HQ3K5M7N-source-note.md");
+        let parsed = read_note(&file_path).unwrap();
+        assert_eq!(parsed.note.links().len(), 1);
+        assert_eq!(
+            parsed.note.links()[0].target().to_string(),
+            "01HQ3K5M7NXJK4QZPW8V2R6T9A" // Source's own ID
+        );
+    }
+
+    #[test]
+    fn handle_unlink_updates_modified_timestamp() {
+        let dir = setup_linked_notes();
+        let file_path = dir.path().join("01HQ3K5M7N-source-note.md");
+        let before = read_note(&file_path).unwrap();
+
+        std::thread::sleep(std::time::Duration::from_millis(10));
+
+        let args = test_unlink_args("Source Note", "Target Note");
+        handle_unlink(&args, dir.path()).unwrap();
+
+        let after = read_note(&file_path).unwrap();
+        assert!(after.note.modified() > before.note.modified());
+    }
+
+    #[test]
+    fn handle_unlink_target_by_id_prefix() {
+        let dir = setup_linked_notes();
+        // Use ID prefix instead of title
+        let args = test_unlink_args("Source Note", "01HQ4A2R9P");
+        let result = handle_unlink(&args, dir.path());
+        assert!(result.is_ok());
+
+        let file_path = dir.path().join("01HQ3K5M7N-source-note.md");
+        let parsed = read_note(&file_path).unwrap();
+        assert!(parsed.note.links().is_empty());
+    }
+
+    #[test]
+    fn handle_unlink_allows_removal_of_broken_link() {
+        // Create a note with a link to a non-existent note ID
+        let dir = TempDir::new().unwrap();
+        std::fs::create_dir_all(dir.path().join(".index")).unwrap();
+
+        // Create note with pre-existing broken link in frontmatter
+        let content = r#"---
+id: 01HQ3K5M7NXJK4QZPW8V2R6T9A
+title: Source Note
+created: 2024-01-01T00:00:00Z
+modified: 2024-01-01T00:00:00Z
+links:
+  - id: 01ZZZZZZZZXJK4QZPW8V2R6T9X
+    rel: [broken-ref]
+---
+
+Content"#;
+        let file_path = dir.path().join("01HQ3K5M7N-source-note.md");
+        std::fs::write(&file_path, content).unwrap();
+
+        // Build index
+        let db_path = dir.path().join(".index/notes.db");
+        let mut index = SqliteIndex::open(&db_path).unwrap();
+        IndexBuilder::new(dir.path().to_path_buf())
+            .full_rebuild(&mut index)
+            .unwrap();
+
+        // Unlink using the broken target ID
+        let args = test_unlink_args("Source Note", "01ZZZZZZZZXJK4QZPW8V2R6T9X");
+        let result = handle_unlink(&args, dir.path());
+        assert!(result.is_ok());
+
+        let parsed = read_note(&file_path).unwrap();
+        assert!(parsed.note.links().is_empty());
     }
 }
