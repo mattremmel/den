@@ -156,7 +156,9 @@ pub fn handle_list(args: &ListArgs, notes_dir: &Path) -> Result<()> {
                 println!("{:<10}  {:<50}  {:>10}", "ID", "Title", "Modified");
                 println!(
                     "{:<10}  {:<50}  {:>10}",
-                    "----------", "--------------------------------------------------", "----------"
+                    "----------",
+                    "--------------------------------------------------",
+                    "----------"
                 );
 
                 for note in &notes {
@@ -426,7 +428,8 @@ fn update_modified_timestamp(path: &Path) -> Result<()> {
     .build()
     .with_context(|| "failed to rebuild note")?;
 
-    write_note(path, &updated_note, &parsed.body).with_context(|| "failed to write updated note")?;
+    write_note(path, &updated_note, &parsed.body)
+        .with_context(|| "failed to write updated note")?;
 
     Ok(())
 }
@@ -434,19 +437,11 @@ fn update_modified_timestamp(path: &Path) -> Result<()> {
 pub fn handle_new(args: &NewArgs, notes_dir: &Path, config: &Config) -> Result<()> {
     // Validate that the notes directory exists
     if !notes_dir.exists() {
-        bail!(
-            "notes directory does not exist: {}",
-            notes_dir.display()
-        );
+        bail!("notes directory does not exist: {}", notes_dir.display());
     }
 
     // Create the note (validates inputs)
-    let result = create_new_note(
-        &args.title,
-        args.desc.as_deref(),
-        &args.topics,
-        &args.tags,
-    )?;
+    let result = create_new_note(&args.title, args.desc.as_deref(), &args.topics, &args.tags)?;
 
     // Construct file path
     let file_path = notes_dir.join(&result.filename);
@@ -464,7 +459,11 @@ pub fn handle_new(args: &NewArgs, notes_dir: &Path, config: &Config) -> Result<(
     }
 
     // Print success message
-    println!("Created: {} [{}]", result.note.title(), result.note.id().prefix());
+    println!(
+        "Created: {} [{}]",
+        result.note.title(),
+        result.note.id().prefix()
+    );
     println!("  {}", file_path.display());
 
     // Open in editor if requested
@@ -496,11 +495,7 @@ pub enum ResolveResult {
 
 /// Prints detailed information about ambiguous notes to help distinguish them.
 fn print_ambiguous_notes(identifier: &str, notes: &[IndexedNote]) {
-    eprintln!(
-        "Ambiguous: '{}' matches {} notes:",
-        identifier,
-        notes.len()
-    );
+    eprintln!("Ambiguous: '{}' matches {} notes:", identifier, notes.len());
     for note in notes {
         eprintln!("  {} - {}", note.id().prefix(), note.title());
 
@@ -537,8 +532,8 @@ pub fn resolve_note<R: IndexRepository>(index: &R, identifier: &str) -> Result<R
     let identifier = identifier.trim();
 
     // Check if it looks like a ULID prefix (alphanumeric, typically 8+ chars)
-    let looks_like_id = identifier.len() >= 4
-        && identifier.chars().all(|c| c.is_ascii_alphanumeric());
+    let looks_like_id =
+        identifier.len() >= 4 && identifier.chars().all(|c| c.is_ascii_alphanumeric());
 
     let mut candidates: Vec<IndexedNote> = Vec::new();
 
@@ -551,7 +546,9 @@ pub fn resolve_note<R: IndexRepository>(index: &R, identifier: &str) -> Result<R
         // If we get exactly one ID match, return it immediately
         // ID matches are the most precise
         if id_matches.len() == 1 {
-            return Ok(ResolveResult::Unique(id_matches.into_iter().next().unwrap()));
+            return Ok(ResolveResult::Unique(
+                id_matches.into_iter().next().unwrap(),
+            ));
         }
 
         candidates.extend(id_matches);
@@ -575,7 +572,9 @@ pub fn resolve_note<R: IndexRepository>(index: &R, identifier: &str) -> Result<R
 
     match candidates.len() {
         0 => Ok(ResolveResult::NotFound),
-        1 => Ok(ResolveResult::Unique(candidates.into_iter().next().unwrap())),
+        1 => Ok(ResolveResult::Unique(
+            candidates.into_iter().next().unwrap(),
+        )),
         _ => Ok(ResolveResult::Ambiguous(candidates)),
     }
 }
@@ -762,7 +761,11 @@ pub fn handle_tags(args: &TagsArgs, notes_dir: &Path) -> Result<()> {
                 .iter()
                 .map(|t| TagListing {
                     name: t.tag().to_string(),
-                    count: if args.counts { Some(t.count() as usize) } else { None },
+                    count: if args.counts {
+                        Some(t.count() as usize)
+                    } else {
+                        None
+                    },
                 })
                 .collect();
             let out = Output::new(listings);
@@ -779,8 +782,8 @@ pub fn handle_tags(args: &TagsArgs, notes_dir: &Path) -> Result<()> {
 
 pub fn handle_tag(args: &TagArgs, notes_dir: &Path) -> Result<()> {
     // Validate tag first (before any I/O)
-    let tag = Tag::new(&args.tag)
-        .map_err(|e| anyhow::anyhow!("invalid tag '{}': {}", args.tag, e))?;
+    let tag =
+        Tag::new(&args.tag).map_err(|e| anyhow::anyhow!("invalid tag '{}': {}", args.tag, e))?;
 
     let db_path = index_db_path(notes_dir);
     let index = SqliteIndex::open(&db_path)
@@ -847,8 +850,8 @@ pub fn handle_tag(args: &TagArgs, notes_dir: &Path) -> Result<()> {
 
 pub fn handle_untag(args: &UntagArgs, notes_dir: &Path) -> Result<()> {
     // Validate tag first (before any I/O)
-    let tag = Tag::new(&args.tag)
-        .map_err(|e| anyhow::anyhow!("invalid tag '{}': {}", args.tag, e))?;
+    let tag =
+        Tag::new(&args.tag).map_err(|e| anyhow::anyhow!("invalid tag '{}': {}", args.tag, e))?;
 
     let db_path = index_db_path(notes_dir);
     let index = SqliteIndex::open(&db_path)
@@ -862,11 +865,7 @@ pub fn handle_untag(args: &UntagArgs, notes_dir: &Path) -> Result<()> {
 
             // Idempotency check: if tag doesn't exist, no-op
             if !parsed.note.tags().contains(&tag) {
-                println!(
-                    "Tag '{}' not present on '{}'",
-                    tag,
-                    parsed.note.title()
-                );
+                println!("Tag '{}' not present on '{}'", tag, parsed.note.title());
                 return Ok(());
             }
 
@@ -1305,8 +1304,7 @@ mod tests {
 
     #[test]
     fn create_new_note_with_description() {
-        let result =
-            create_new_note("Test Note", Some("A test description"), &[], &[]).unwrap();
+        let result = create_new_note("Test Note", Some("A test description"), &[], &[]).unwrap();
         assert_eq!(result.note.description(), Some("A test description"));
     }
 
@@ -1773,11 +1771,7 @@ aliases:
 
 This is the body of the note.
 "#;
-            std::fs::write(
-                dir.path().join("01HQ3K5M7N-api-design.md"),
-                note_content,
-            )
-            .unwrap();
+            std::fs::write(dir.path().join("01HQ3K5M7N-api-design.md"), note_content).unwrap();
 
             // Build index
             let db_path = dir.path().join(".index/notes.db");
@@ -2102,9 +2096,7 @@ Note 2
             // Verify index was updated by checking modified time in index
             let db_path = dir.path().join(".index/notes.db");
             let index = SqliteIndex::open(&db_path).unwrap();
-            let notes = index
-                .find_by_title("API Design")
-                .unwrap();
+            let notes = index.find_by_title("API Design").unwrap();
             assert_eq!(notes.len(), 1);
 
             // The index should reflect the updated modified timestamp

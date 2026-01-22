@@ -142,6 +142,9 @@ mod tests {
         // With default config, should return something (either from env or "vi")
         let config = Config::default();
         let result = config.editor();
-        assert!(!result.is_empty(), "editor should never return empty string");
+        assert!(
+            !result.is_empty(),
+            "editor should never return empty string"
+        );
     }
 }

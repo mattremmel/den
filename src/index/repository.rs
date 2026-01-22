@@ -1,6 +1,6 @@
 //! IndexRepository trait and result types.
 
-use crate::domain::{Note, NoteId, Tag, Topic};
+use crate::domain::{Note, NoteId, Rel, Tag, Topic};
 use crate::infra::ContentHash;
 use chrono::{DateTime, Utc};
 use std::path::{Path, PathBuf};
@@ -399,6 +399,12 @@ pub trait IndexRepository {
 
     /// Finds notes with a matching alias (case-insensitive).
     fn find_by_alias(&self, alias: &str) -> IndexResult<Vec<IndexedNote>>;
+
+    /// Finds all notes that link TO the given target note (backlinks).
+    ///
+    /// Returns notes that contain links pointing to `target_id`.
+    /// If `rel` is provided, only returns notes with links having that relationship type.
+    fn backlinks(&self, target_id: &NoteId, rel: Option<&Rel>) -> IndexResult<Vec<IndexedNote>>;
 }
 
 #[cfg(test)]

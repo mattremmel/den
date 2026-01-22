@@ -1,6 +1,6 @@
 //! SQLite-backed notes index implementation.
 
-use crate::domain::{Note, NoteId, Tag, Topic};
+use crate::domain::{Note, NoteId, Rel, Tag, Topic};
 use crate::index::{
     IndexError, IndexRepository, IndexResult, IndexedNote, SearchResult, TagWithCount,
     TopicWithCount, create_schema,
@@ -565,9 +565,9 @@ impl IndexRepository for SqliteIndex {
         // ULID IDs are uppercase, so normalize the prefix
         let prefix_upper = prefix.to_uppercase();
 
-        let mut stmt = self.conn.prepare(
-            "SELECT id FROM notes WHERE id LIKE ? || '%' COLLATE NOCASE",
-        )?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id FROM notes WHERE id LIKE ? || '%' COLLATE NOCASE")?;
 
         let note_ids: Vec<NoteId> = stmt
             .query_map([&prefix_upper], |row| row.get::<_, String>(0))?
@@ -586,9 +586,9 @@ impl IndexRepository for SqliteIndex {
     }
 
     fn find_by_title(&self, title: &str) -> IndexResult<Vec<IndexedNote>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id FROM notes WHERE title = ? COLLATE NOCASE",
-        )?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id FROM notes WHERE title = ? COLLATE NOCASE")?;
 
         let note_ids: Vec<NoteId> = stmt
             .query_map([title], |row| row.get::<_, String>(0))?
@@ -611,9 +611,9 @@ impl IndexRepository for SqliteIndex {
         // We need to match the alias as a whole word
         let pattern = format!("%{}%", alias);
 
-        let mut stmt = self.conn.prepare(
-            "SELECT id FROM notes WHERE aliases_text LIKE ? COLLATE NOCASE",
-        )?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id FROM notes WHERE aliases_text LIKE ? COLLATE NOCASE")?;
 
         let note_ids: Vec<NoteId> = stmt
             .query_map([&pattern], |row| row.get::<_, String>(0))?
@@ -627,7 +627,8 @@ impl IndexRepository for SqliteIndex {
         for id in note_ids {
             if let Some(note) = self.get_note(&id)? {
                 // We need to check the actual aliases - fetch from DB
-                let aliases_text: Option<String> = self.conn
+                let aliases_text: Option<String> = self
+                    .conn
                     .query_row(
                         "SELECT aliases_text FROM notes WHERE id = ?",
                         [id.to_string()],
@@ -647,6 +648,42 @@ impl IndexRepository for SqliteIndex {
             }
         }
 
+        Ok(notes)
+    }
+
+    fn backlinks(&self, target_id: &NoteId, rel: Option<&Rel>) -> IndexResult<Vec<IndexedNote>> {
+        let note_ids: Vec<NoteId> = match rel {
+            None => {
+                let mut stmt = self
+                    .conn
+                    .prepare("SELECT DISTINCT source_id FROM links WHERE target_id = ?")?;
+                stmt.query_map([target_id.to_string()], |row| row.get::<_, String>(0))?
+                    .filter_map(|r| r.ok())
+                    .filter_map(|id_str| id_str.parse().ok())
+                    .collect()
+            }
+            Some(r) => {
+                let mut stmt = self.conn.prepare(
+                    "SELECT DISTINCT l.source_id FROM links l
+                     JOIN link_rels lr ON l.id = lr.link_id
+                     WHERE l.target_id = ? AND lr.rel = ?",
+                )?;
+                stmt.query_map(
+                    rusqlite::params![target_id.to_string(), r.as_str()],
+                    |row| row.get::<_, String>(0),
+                )?
+                .filter_map(|r| r.ok())
+                .filter_map(|id_str| id_str.parse().ok())
+                .collect()
+            }
+        };
+
+        let mut notes = Vec::with_capacity(note_ids.len());
+        for id in note_ids {
+            if let Some(note) = self.get_note(&id)? {
+                notes.push(note);
+            }
+        }
         Ok(notes)
     }
 }
@@ -3183,12 +3220,7 @@ mod tests {
     #[test]
     fn find_by_id_prefix_empty_returns_empty() {
         let index = SqliteIndex::open_in_memory().unwrap();
-        insert_note_with_body(
-            &index,
-            "01HQ3K5M7NXJK4QZPW8V2R6T9Y",
-            "Test",
-            "body",
-        );
+        insert_note_with_body(&index, "01HQ3K5M7NXJK4QZPW8V2R6T9Y", "Test", "body");
 
         let results = index.find_by_id_prefix("").unwrap();
         assert!(results.is_empty(), "Empty prefix should return no results");
@@ -3202,7 +3234,9 @@ mod tests {
         let path = PathBuf::from("test.md");
         index.upsert_note(&note, &hash, &path).unwrap();
 
-        let results = index.find_by_id_prefix("01HQ3K5M7NXJK4QZPW8V2R6T9Y").unwrap();
+        let results = index
+            .find_by_id_prefix("01HQ3K5M7NXJK4QZPW8V2R6T9Y")
+            .unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].title(), "Test Note");
     }
@@ -3250,18 +3284,8 @@ mod tests {
     fn find_by_id_prefix_multiple_matches() {
         let index = SqliteIndex::open_in_memory().unwrap();
         // Insert two notes with same prefix
-        insert_note_with_body(
-            &index,
-            "01HQ3K5M7NXJK4QZPW8V2R6T9A",
-            "Note A",
-            "body a",
-        );
-        insert_note_with_body(
-            &index,
-            "01HQ3K5M7NXJK4QZPW8V2R6T9B",
-            "Note B",
-            "body b",
-        );
+        insert_note_with_body(&index, "01HQ3K5M7NXJK4QZPW8V2R6T9A", "Note A", "body a");
+        insert_note_with_body(&index, "01HQ3K5M7NXJK4QZPW8V2R6T9B", "Note B", "body b");
 
         let results = index.find_by_id_prefix("01HQ3K5M").unwrap();
         assert_eq!(results.len(), 2);
@@ -3434,5 +3458,322 @@ mod tests {
 
         let results = index.find_by_alias("anything").unwrap();
         assert!(results.is_empty());
+    }
+
+    // ===========================================
+    // Backlinks Tests
+    // ===========================================
+
+    fn insert_link(index: &SqliteIndex, source_id: &NoteId, target_id: &NoteId, rels: &[&str]) {
+        let link_id: i64 = index
+            .conn()
+            .query_row(
+                "INSERT INTO links (source_id, target_id) VALUES (?, ?) RETURNING id",
+                [source_id.to_string(), target_id.to_string()],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        for rel in rels {
+            index
+                .conn()
+                .execute(
+                    "INSERT INTO link_rels (link_id, rel) VALUES (?, ?)",
+                    rusqlite::params![link_id, rel],
+                )
+                .unwrap();
+        }
+    }
+
+    #[test]
+    fn backlinks_nonexistent_target_returns_empty() {
+        let index = SqliteIndex::open_in_memory().unwrap();
+        let target_id: NoteId = "01HQ3K5M7NXJK4QZPW8V2R6T9Y".parse().unwrap();
+
+        let results = index.backlinks(&target_id, None).unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn backlinks_finds_single_source_note() {
+        let mut index = SqliteIndex::open_in_memory().unwrap();
+        let source_id = test_note_id();
+        let target_id: NoteId = "01HQ4A2R9PXJK4QZPW8V2R6T9Z".parse().unwrap();
+
+        // Insert source note
+        let note = sample_note("Source Note");
+        index
+            .upsert_note(&note, &test_content_hash(), &test_path())
+            .unwrap();
+
+        // Insert link from source to target
+        insert_link(&index, &source_id, &target_id, &["parent"]);
+
+        let results = index.backlinks(&target_id, None).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].id(), &source_id);
+    }
+
+    #[test]
+    fn backlinks_finds_multiple_source_notes() {
+        let mut index = SqliteIndex::open_in_memory().unwrap();
+        let source1_id: NoteId = "01HQ3K5M7NXJK4QZPW8V2R6T9Y".parse().unwrap();
+        let source2_id: NoteId = "01HQ4A2R9PXJK4QZPW8V2R6T9Z".parse().unwrap();
+        let target_id: NoteId = "01HQ5B3S0QYJK5RZQX9W3S7T0A".parse().unwrap();
+
+        // Insert source notes
+        let note1 = Note::new(
+            source1_id.clone(),
+            "Source 1",
+            test_datetime(),
+            test_datetime(),
+        )
+        .unwrap();
+        let note2 = Note::new(
+            source2_id.clone(),
+            "Source 2",
+            test_datetime(),
+            test_datetime(),
+        )
+        .unwrap();
+        index
+            .upsert_note(&note1, &test_content_hash(), &PathBuf::from("s1.md"))
+            .unwrap();
+        index
+            .upsert_note(&note2, &test_content_hash(), &PathBuf::from("s2.md"))
+            .unwrap();
+
+        // Insert links
+        insert_link(&index, &source1_id, &target_id, &["parent"]);
+        insert_link(&index, &source2_id, &target_id, &["see-also"]);
+
+        let results = index.backlinks(&target_id, None).unwrap();
+        assert_eq!(results.len(), 2);
+    }
+
+    #[test]
+    fn backlinks_filters_by_rel() {
+        let mut index = SqliteIndex::open_in_memory().unwrap();
+        let source1_id: NoteId = "01HQ3K5M7NXJK4QZPW8V2R6T9Y".parse().unwrap();
+        let source2_id: NoteId = "01HQ4A2R9PXJK4QZPW8V2R6T9Z".parse().unwrap();
+        let target_id: NoteId = "01HQ5B3S0QYJK5RZQX9W3S7T0A".parse().unwrap();
+
+        // Insert source notes
+        let note1 = Note::new(
+            source1_id.clone(),
+            "Source 1",
+            test_datetime(),
+            test_datetime(),
+        )
+        .unwrap();
+        let note2 = Note::new(
+            source2_id.clone(),
+            "Source 2",
+            test_datetime(),
+            test_datetime(),
+        )
+        .unwrap();
+        index
+            .upsert_note(&note1, &test_content_hash(), &PathBuf::from("s1.md"))
+            .unwrap();
+        index
+            .upsert_note(&note2, &test_content_hash(), &PathBuf::from("s2.md"))
+            .unwrap();
+
+        // Insert links with different rels
+        insert_link(&index, &source1_id, &target_id, &["parent"]);
+        insert_link(&index, &source2_id, &target_id, &["see-also"]);
+
+        let rel = Rel::new("parent").unwrap();
+        let results = index.backlinks(&target_id, Some(&rel)).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].id(), &source1_id);
+    }
+
+    #[test]
+    fn backlinks_rel_filter_no_matches_returns_empty() {
+        let mut index = SqliteIndex::open_in_memory().unwrap();
+        let source_id = test_note_id();
+        let target_id: NoteId = "01HQ4A2R9PXJK4QZPW8V2R6T9Z".parse().unwrap();
+
+        // Insert source note
+        let note = sample_note("Source Note");
+        index
+            .upsert_note(&note, &test_content_hash(), &test_path())
+            .unwrap();
+
+        // Insert link with "parent" rel
+        insert_link(&index, &source_id, &target_id, &["parent"]);
+
+        // Search for different rel
+        let rel = Rel::new("see-also").unwrap();
+        let results = index.backlinks(&target_id, Some(&rel)).unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn backlinks_link_without_rels_found_with_no_filter() {
+        let mut index = SqliteIndex::open_in_memory().unwrap();
+        let source_id = test_note_id();
+        let target_id: NoteId = "01HQ4A2R9PXJK4QZPW8V2R6T9Z".parse().unwrap();
+
+        // Insert source note
+        let note = sample_note("Source Note");
+        index
+            .upsert_note(&note, &test_content_hash(), &test_path())
+            .unwrap();
+
+        // Insert link WITHOUT any rels
+        insert_link(&index, &source_id, &target_id, &[]);
+
+        let results = index.backlinks(&target_id, None).unwrap();
+        assert_eq!(results.len(), 1);
+    }
+
+    #[test]
+    fn backlinks_link_without_rels_not_found_with_filter() {
+        let mut index = SqliteIndex::open_in_memory().unwrap();
+        let source_id = test_note_id();
+        let target_id: NoteId = "01HQ4A2R9PXJK4QZPW8V2R6T9Z".parse().unwrap();
+
+        // Insert source note
+        let note = sample_note("Source Note");
+        index
+            .upsert_note(&note, &test_content_hash(), &test_path())
+            .unwrap();
+
+        // Insert link WITHOUT any rels
+        insert_link(&index, &source_id, &target_id, &[]);
+
+        // Search with rel filter - should NOT find it
+        let rel = Rel::new("parent").unwrap();
+        let results = index.backlinks(&target_id, Some(&rel)).unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn backlinks_link_with_multiple_rels_matches_any() {
+        let mut index = SqliteIndex::open_in_memory().unwrap();
+        let source_id = test_note_id();
+        let target_id: NoteId = "01HQ4A2R9PXJK4QZPW8V2R6T9Z".parse().unwrap();
+
+        // Insert source note
+        let note = sample_note("Source Note");
+        index
+            .upsert_note(&note, &test_content_hash(), &test_path())
+            .unwrap();
+
+        // Insert link with MULTIPLE rels
+        insert_link(&index, &source_id, &target_id, &["parent", "mentor"]);
+
+        // Should match on first rel
+        let rel1 = Rel::new("parent").unwrap();
+        let results1 = index.backlinks(&target_id, Some(&rel1)).unwrap();
+        assert_eq!(results1.len(), 1);
+
+        // Should match on second rel
+        let rel2 = Rel::new("mentor").unwrap();
+        let results2 = index.backlinks(&target_id, Some(&rel2)).unwrap();
+        assert_eq!(results2.len(), 1);
+    }
+
+    #[test]
+    fn backlinks_works_when_source_note_exists() {
+        // Target doesn't exist as a note, but source does - backlinks should work
+        let mut index = SqliteIndex::open_in_memory().unwrap();
+        let source_id = test_note_id();
+        let target_id: NoteId = "01HQ4A2R9PXJK4QZPW8V2R6T9Z".parse().unwrap();
+
+        // Insert source note (target is NOT a note)
+        let note = sample_note("Source Note");
+        index
+            .upsert_note(&note, &test_content_hash(), &test_path())
+            .unwrap();
+
+        // Insert link to non-existent target
+        insert_link(&index, &source_id, &target_id, &["parent"]);
+
+        let results = index.backlinks(&target_id, None).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].id(), &source_id);
+    }
+
+    #[test]
+    fn backlinks_excludes_deleted_source_notes() {
+        let mut index = SqliteIndex::open_in_memory().unwrap();
+        let source_id = test_note_id();
+        let target_id: NoteId = "01HQ4A2R9PXJK4QZPW8V2R6T9Z".parse().unwrap();
+
+        // Insert source note
+        let note = sample_note("Source Note");
+        index
+            .upsert_note(&note, &test_content_hash(), &test_path())
+            .unwrap();
+
+        // Insert link
+        insert_link(&index, &source_id, &target_id, &["parent"]);
+
+        // Verify link exists
+        let results = index.backlinks(&target_id, None).unwrap();
+        assert_eq!(results.len(), 1);
+
+        // Delete source note (link should be cascaded)
+        index.remove_note(&source_id).unwrap();
+
+        // Backlinks should be empty now
+        let results = index.backlinks(&target_id, None).unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn backlinks_rel_filter_case_insensitive() {
+        let mut index = SqliteIndex::open_in_memory().unwrap();
+        let source_id = test_note_id();
+        let target_id: NoteId = "01HQ4A2R9PXJK4QZPW8V2R6T9Z".parse().unwrap();
+
+        // Insert source note
+        let note = sample_note("Source Note");
+        index
+            .upsert_note(&note, &test_content_hash(), &test_path())
+            .unwrap();
+
+        // Insert link with lowercase rel
+        insert_link(&index, &source_id, &target_id, &["parent"]);
+
+        // Search with uppercase rel - Rel::new normalizes to lowercase
+        let rel = Rel::new("PARENT").unwrap();
+        let results = index.backlinks(&target_id, Some(&rel)).unwrap();
+        assert_eq!(results.len(), 1);
+    }
+
+    #[test]
+    fn backlinks_returns_distinct_source_notes() {
+        let mut index = SqliteIndex::open_in_memory().unwrap();
+        let source_id = test_note_id();
+        let target_id: NoteId = "01HQ4A2R9PXJK4QZPW8V2R6T9Z".parse().unwrap();
+
+        // Insert source note
+        let note = sample_note("Source Note");
+        index
+            .upsert_note(&note, &test_content_hash(), &test_path())
+            .unwrap();
+
+        // Test DISTINCT by having a link with multiple rels
+        // Both rel filters should return the same single note, not duplicates
+        insert_link(&index, &source_id, &target_id, &["parent", "mentor"]);
+
+        // Both rel filters should return the same single note
+        let rel1 = Rel::new("parent").unwrap();
+        let results1 = index.backlinks(&target_id, Some(&rel1)).unwrap();
+
+        let rel2 = Rel::new("mentor").unwrap();
+        let results2 = index.backlinks(&target_id, Some(&rel2)).unwrap();
+
+        assert_eq!(results1.len(), 1);
+        assert_eq!(results2.len(), 1);
+
+        // Without filter
+        let results_all = index.backlinks(&target_id, None).unwrap();
+        assert_eq!(results_all.len(), 1);
     }
 }
