@@ -12,8 +12,8 @@ use cli::{
     Cli, Command,
     config::Config,
     handlers::{
-        handle_backlinks, handle_check, handle_edit, handle_index, handle_link, handle_list,
-        handle_new, handle_rels, handle_search, handle_show, handle_tag, handle_tags,
+        handle_backlinks, handle_check, handle_completions, handle_edit, handle_index, handle_link,
+        handle_list, handle_new, handle_rels, handle_search, handle_show, handle_tag, handle_tags,
         handle_topics, handle_unlink, handle_untag,
     },
 };
@@ -41,5 +41,6 @@ pub fn run() -> Result<()> {
         Command::Link(args) => handle_link(args, &notes_dir),
         Command::Unlink(args) => handle_unlink(args, &notes_dir),
         Command::Rels(args) => handle_rels(args, &notes_dir),
+        Command::Completions(args) => handle_completions(args),
     }
 }

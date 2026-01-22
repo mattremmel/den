@@ -3652,3 +3652,41 @@ This is important body content that must be preserved.
         assert!(content.contains("Bullet point 1"));
     }
 }
+
+// ===========================================
+// completions tests
+// ===========================================
+
+#[test]
+fn completions_generates_bash_script() {
+    use super::generate_completions;
+    use clap_complete::Shell;
+
+    let mut output = Vec::new();
+    generate_completions(Shell::Bash, &mut output).unwrap();
+    let script = String::from_utf8(output).unwrap();
+    assert!(script.contains("_den"));
+    assert!(script.contains("complete"));
+}
+
+#[test]
+fn completions_generates_zsh_script() {
+    use super::generate_completions;
+    use clap_complete::Shell;
+
+    let mut output = Vec::new();
+    generate_completions(Shell::Zsh, &mut output).unwrap();
+    let script = String::from_utf8(output).unwrap();
+    assert!(script.contains("#compdef den"));
+}
+
+#[test]
+fn completions_generates_fish_script() {
+    use super::generate_completions;
+    use clap_complete::Shell;
+
+    let mut output = Vec::new();
+    generate_completions(Shell::Fish, &mut output).unwrap();
+    let script = String::from_utf8(output).unwrap();
+    assert!(script.contains("complete -c den"));
+}

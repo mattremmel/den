@@ -6,6 +6,7 @@ pub mod handlers;
 pub mod output;
 
 use clap::{ArgAction, Parser, Subcommand};
+use clap_complete::Shell;
 use std::path::PathBuf;
 
 use output::OutputFormat;
@@ -73,6 +74,9 @@ pub enum Command {
 
     /// List relationship types used in links
     Rels(RelsArgs),
+
+    /// Generate shell completions
+    Completions(CompletionsArgs),
 }
 
 /// Arguments for the `index` command
@@ -267,4 +271,12 @@ pub struct RelsArgs {
     /// Output format
     #[arg(short = 'f', long, value_enum, default_value_t = OutputFormat::Human)]
     pub format: OutputFormat,
+}
+
+/// Arguments for the `completions` command
+#[derive(Parser, Debug)]
+pub struct CompletionsArgs {
+    /// Shell to generate completions for (bash, zsh, fish)
+    #[arg(value_enum)]
+    pub shell: Shell,
 }

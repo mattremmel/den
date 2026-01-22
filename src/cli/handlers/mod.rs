@@ -15,6 +15,11 @@ pub(crate) mod tests;
 
 use std::path::{Path, PathBuf};
 
+use anyhow::Result;
+use clap::CommandFactory;
+use clap_complete::{Shell, generate};
+
+use crate::cli::{Cli, CompletionsArgs};
 use crate::index::{FileResult, ProgressReporter};
 
 // Re-export public items
@@ -27,6 +32,18 @@ pub use new::{NewNoteResult, create_new_note, handle_new};
 pub use resolve::{ResolveResult, resolve_note};
 pub use search::handle_search;
 pub use show_edit::{handle_edit, handle_show};
+
+/// Generate shell completions script for the given shell.
+pub fn generate_completions<W: std::io::Write>(shell: Shell, out: &mut W) -> Result<()> {
+    let mut cmd = Cli::command();
+    generate(shell, &mut cmd, "den", out);
+    Ok(())
+}
+
+/// Handle the completions command.
+pub fn handle_completions(args: &CompletionsArgs) -> Result<()> {
+    generate_completions(args.shell, &mut std::io::stdout())
+}
 
 // Re-export for tests
 #[cfg(test)]
