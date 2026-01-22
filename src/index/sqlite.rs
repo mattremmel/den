@@ -3,7 +3,7 @@
 use crate::domain::{Note, NoteId, Tag, Topic};
 use crate::index::{
     IndexError, IndexRepository, IndexResult, IndexedNote, SearchResult, TagWithCount,
-    create_schema,
+    TopicWithCount, create_schema,
 };
 use crate::infra::ContentHash;
 use chrono::{DateTime, Utc};
@@ -444,8 +444,36 @@ impl IndexRepository for SqliteIndex {
         Ok(search_results)
     }
 
-    fn all_topics(&self) -> IndexResult<Vec<crate::index::TopicWithCount>> {
-        todo!("all_topics not yet implemented")
+    fn all_topics(&self) -> IndexResult<Vec<TopicWithCount>> {
+        let query = "SELECT t.path,
+                            COUNT(DISTINCT nt.note_id) as exact_count,
+                            (SELECT COUNT(DISTINCT nt2.note_id)
+                             FROM topics t2
+                             JOIN note_topics nt2 ON t2.id = nt2.topic_id
+                             WHERE t2.path = t.path OR t2.path LIKE t.path || '/%'
+                            ) as total_count
+                     FROM topics t
+                     INNER JOIN note_topics nt ON t.id = nt.topic_id
+                     GROUP BY t.id
+                     ORDER BY t.path";
+
+        let mut stmt = self.conn.prepare(query)?;
+        let topics = stmt
+            .query_map([], |row| {
+                let path: String = row.get(0)?;
+                let exact_count: u32 = row.get(1)?;
+                let total_count: u32 = row.get(2)?;
+                Ok((path, exact_count, total_count))
+            })?
+            .filter_map(|r| r.ok())
+            .filter_map(|(path, exact_count, total_count)| {
+                Topic::new(&path)
+                    .ok()
+                    .map(|topic| TopicWithCount::new(topic, exact_count, total_count))
+            })
+            .collect();
+
+        Ok(topics)
     }
 
     fn all_tags(&self) -> IndexResult<Vec<TagWithCount>> {
@@ -2197,6 +2225,261 @@ mod tests {
         let result = index.all_tags().unwrap();
         // Tag exists in DB but has no notes - should be excluded
         assert!(result.is_empty());
+    }
+
+    // ===========================================
+    // all_topics Tests
+    // ===========================================
+
+    #[test]
+    fn all_topics_returns_empty_when_no_topics() {
+        let index = SqliteIndex::open_in_memory().unwrap();
+        let result = index.all_topics().unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn all_topics_returns_single_topic_with_counts() {
+        let mut index = SqliteIndex::open_in_memory().unwrap();
+        let topic = Topic::new("rust").unwrap();
+        let note = Note::builder(test_note_id(), "Test", test_datetime(), test_datetime())
+            .topics(vec![topic.clone()])
+            .build()
+            .unwrap();
+        index
+            .upsert_note(&note, &test_content_hash(), &test_path())
+            .unwrap();
+
+        let result = index.all_topics().unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].topic(), &topic);
+        assert_eq!(result[0].exact_count(), 1);
+        assert_eq!(result[0].total_count(), 1);
+    }
+
+    #[test]
+    fn all_topics_counts_multiple_notes_per_topic() {
+        let mut index = SqliteIndex::open_in_memory().unwrap();
+        let topic = Topic::new("rust").unwrap();
+
+        let note1 = Note::builder(test_note_id(), "Note 1", test_datetime(), test_datetime())
+            .topics(vec![topic.clone()])
+            .build()
+            .unwrap();
+        index
+            .upsert_note(&note1, &test_content_hash(), &test_path())
+            .unwrap();
+
+        let note2 = Note::builder(other_note_id(), "Note 2", test_datetime(), test_datetime())
+            .topics(vec![topic.clone()])
+            .build()
+            .unwrap();
+        index
+            .upsert_note(
+                &note2,
+                &test_content_hash(),
+                &PathBuf::from("notes/other.md"),
+            )
+            .unwrap();
+
+        let result = index.all_topics().unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].exact_count(), 2);
+        assert_eq!(result[0].total_count(), 2);
+    }
+
+    #[test]
+    fn all_topics_returns_multiple_topics_sorted() {
+        let mut index = SqliteIndex::open_in_memory().unwrap();
+        let rust_topic = Topic::new("rust").unwrap();
+        let python_topic = Topic::new("python").unwrap();
+
+        let note = Note::builder(test_note_id(), "Test", test_datetime(), test_datetime())
+            .topics(vec![rust_topic.clone(), python_topic.clone()])
+            .build()
+            .unwrap();
+        index
+            .upsert_note(&note, &test_content_hash(), &test_path())
+            .unwrap();
+
+        let result = index.all_topics().unwrap();
+        assert_eq!(result.len(), 2);
+        // Alphabetically sorted: python, rust
+        assert_eq!(result[0].topic(), &python_topic);
+        assert_eq!(result[1].topic(), &rust_topic);
+    }
+
+    #[test]
+    fn all_topics_excludes_orphaned_topics() {
+        let mut index = SqliteIndex::open_in_memory().unwrap();
+        let topic = Topic::new("rust").unwrap();
+
+        let note = Note::builder(test_note_id(), "Test", test_datetime(), test_datetime())
+            .topics(vec![topic.clone()])
+            .build()
+            .unwrap();
+        index
+            .upsert_note(&note, &test_content_hash(), &test_path())
+            .unwrap();
+        index.remove_note(note.id()).unwrap();
+
+        let result = index.all_topics().unwrap();
+        // Topic exists in DB but has no notes - should be excluded
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn all_topics_calculates_descendant_counts() {
+        let mut index = SqliteIndex::open_in_memory().unwrap();
+        let software_topic = Topic::new("software").unwrap();
+        let software_rust_topic = Topic::new("software/rust").unwrap();
+
+        // Two notes with 'software' topic
+        let note1 = Note::builder(test_note_id(), "Note 1", test_datetime(), test_datetime())
+            .topics(vec![software_topic.clone()])
+            .build()
+            .unwrap();
+        index
+            .upsert_note(&note1, &test_content_hash(), &test_path())
+            .unwrap();
+
+        let note2 = Note::builder(other_note_id(), "Note 2", test_datetime(), test_datetime())
+            .topics(vec![software_topic.clone()])
+            .build()
+            .unwrap();
+        index
+            .upsert_note(
+                &note2,
+                &test_content_hash(),
+                &PathBuf::from("notes/note2.md"),
+            )
+            .unwrap();
+
+        // Three notes with 'software/rust' topic
+        let note3 = Note::builder(
+            "01HQ3K5M7NXJK4QZPW8V2R6T11".parse().unwrap(),
+            "Note 3",
+            test_datetime(),
+            test_datetime(),
+        )
+        .topics(vec![software_rust_topic.clone()])
+        .build()
+        .unwrap();
+        index
+            .upsert_note(
+                &note3,
+                &test_content_hash(),
+                &PathBuf::from("notes/note3.md"),
+            )
+            .unwrap();
+
+        let note4 = Note::builder(
+            "01HQ3K5M7NXJK4QZPW8V2R6T12".parse().unwrap(),
+            "Note 4",
+            test_datetime(),
+            test_datetime(),
+        )
+        .topics(vec![software_rust_topic.clone()])
+        .build()
+        .unwrap();
+        index
+            .upsert_note(
+                &note4,
+                &test_content_hash(),
+                &PathBuf::from("notes/note4.md"),
+            )
+            .unwrap();
+
+        let note5 = Note::builder(
+            "01HQ3K5M7NXJK4QZPW8V2R6T13".parse().unwrap(),
+            "Note 5",
+            test_datetime(),
+            test_datetime(),
+        )
+        .topics(vec![software_rust_topic.clone()])
+        .build()
+        .unwrap();
+        index
+            .upsert_note(
+                &note5,
+                &test_content_hash(),
+                &PathBuf::from("notes/note5.md"),
+            )
+            .unwrap();
+
+        let result = index.all_topics().unwrap();
+        assert_eq!(result.len(), 2);
+
+        // Topics are sorted alphabetically
+        assert_eq!(result[0].topic(), &software_topic);
+        assert_eq!(result[0].exact_count(), 2); // Only notes with exactly 'software'
+        assert_eq!(result[0].total_count(), 5); // 'software' + 'software/rust'
+
+        assert_eq!(result[1].topic(), &software_rust_topic);
+        assert_eq!(result[1].exact_count(), 3); // Only notes with 'software/rust'
+        assert_eq!(result[1].total_count(), 3); // No descendants
+    }
+
+    #[test]
+    fn all_topics_handles_deep_hierarchy() {
+        let mut index = SqliteIndex::open_in_memory().unwrap();
+        let a_topic = Topic::new("a").unwrap();
+        let a_b_topic = Topic::new("a/b").unwrap();
+        let a_b_c_topic = Topic::new("a/b/c").unwrap();
+
+        // One note at each level
+        let note1 = Note::builder(test_note_id(), "Note 1", test_datetime(), test_datetime())
+            .topics(vec![a_topic.clone()])
+            .build()
+            .unwrap();
+        index
+            .upsert_note(&note1, &test_content_hash(), &test_path())
+            .unwrap();
+
+        let note2 = Note::builder(other_note_id(), "Note 2", test_datetime(), test_datetime())
+            .topics(vec![a_b_topic.clone()])
+            .build()
+            .unwrap();
+        index
+            .upsert_note(
+                &note2,
+                &test_content_hash(),
+                &PathBuf::from("notes/note2.md"),
+            )
+            .unwrap();
+
+        let note3 = Note::builder(
+            "01HQ3K5M7NXJK4QZPW8V2R6T11".parse().unwrap(),
+            "Note 3",
+            test_datetime(),
+            test_datetime(),
+        )
+        .topics(vec![a_b_c_topic.clone()])
+        .build()
+        .unwrap();
+        index
+            .upsert_note(
+                &note3,
+                &test_content_hash(),
+                &PathBuf::from("notes/note3.md"),
+            )
+            .unwrap();
+
+        let result = index.all_topics().unwrap();
+        assert_eq!(result.len(), 3);
+
+        // Topics are sorted alphabetically: a, a/b, a/b/c
+        assert_eq!(result[0].topic(), &a_topic);
+        assert_eq!(result[0].exact_count(), 1);
+        assert_eq!(result[0].total_count(), 3); // a + a/b + a/b/c
+
+        assert_eq!(result[1].topic(), &a_b_topic);
+        assert_eq!(result[1].exact_count(), 1);
+        assert_eq!(result[1].total_count(), 2); // a/b + a/b/c
+
+        assert_eq!(result[2].topic(), &a_b_c_topic);
+        assert_eq!(result[2].exact_count(), 1);
+        assert_eq!(result[2].total_count(), 1); // just a/b/c
     }
 
     // ===========================================
