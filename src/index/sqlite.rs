@@ -1,7 +1,9 @@
 //! SQLite-backed notes index implementation.
 
 use crate::domain::{Note, NoteId, Tag, Topic};
-use crate::index::{IndexError, IndexRepository, IndexResult, IndexedNote, create_schema};
+use crate::index::{
+    IndexError, IndexRepository, IndexResult, IndexedNote, TagWithCount, create_schema,
+};
 use crate::infra::ContentHash;
 use chrono::{DateTime, Utc};
 use rusqlite::{Connection, Params};
@@ -349,8 +351,27 @@ impl IndexRepository for SqliteIndex {
         Ok(notes)
     }
 
-    fn list_by_tag(&self, _tag: &Tag) -> IndexResult<Vec<IndexedNote>> {
-        todo!("list_by_tag not yet implemented")
+    fn list_by_tag(&self, tag: &Tag) -> IndexResult<Vec<IndexedNote>> {
+        let query = "SELECT DISTINCT n.id FROM notes n
+                     JOIN note_tags nt ON n.id = nt.note_id
+                     JOIN tags t ON nt.tag_id = t.id
+                     WHERE t.name = ?";
+
+        let mut stmt = self.conn.prepare(query)?;
+        let note_ids: Vec<NoteId> = stmt
+            .query_map([tag.as_str()], |row| row.get::<_, String>(0))?
+            .filter_map(|r| r.ok())
+            .filter_map(|id_str| id_str.parse().ok())
+            .collect();
+
+        let mut notes = Vec::with_capacity(note_ids.len());
+        for id in note_ids {
+            if let Some(note) = self.get_note(&id)? {
+                notes.push(note);
+            }
+        }
+
+        Ok(notes)
     }
 
     fn search(&self, _query: &str) -> IndexResult<Vec<crate::index::SearchResult>> {
@@ -361,8 +382,29 @@ impl IndexRepository for SqliteIndex {
         todo!("all_topics not yet implemented")
     }
 
-    fn all_tags(&self) -> IndexResult<Vec<crate::index::TagWithCount>> {
-        todo!("all_tags not yet implemented")
+    fn all_tags(&self) -> IndexResult<Vec<TagWithCount>> {
+        let query = "SELECT t.name, COUNT(nt.note_id) as count
+                     FROM tags t
+                     INNER JOIN note_tags nt ON t.id = nt.tag_id
+                     GROUP BY t.id
+                     ORDER BY t.name";
+
+        let mut stmt = self.conn.prepare(query)?;
+        let tags = stmt
+            .query_map([], |row| {
+                let name: String = row.get(0)?;
+                let count: u32 = row.get(1)?;
+                Ok((name, count))
+            })?
+            .filter_map(|r| r.ok())
+            .filter_map(|(name, count)| {
+                Tag::new(&name)
+                    .ok()
+                    .map(|tag| TagWithCount::new(tag, count))
+            })
+            .collect();
+
+        Ok(tags)
     }
 
     fn get_content_hash(&self, _path: &Path) -> IndexResult<Option<ContentHash>> {
@@ -1860,5 +1902,234 @@ mod tests {
         assert_eq!(indexed.topics(), &[topic]);
         assert_eq!(indexed.tags(), &[tag]);
         assert_eq!(indexed.content_hash(), &hash);
+    }
+
+    // ===========================================
+    // list_by_tag Tests
+    // ===========================================
+
+    #[test]
+    fn list_by_tag_returns_empty_when_no_matches() {
+        let index = SqliteIndex::open_in_memory().unwrap();
+        let tag = Tag::new("nonexistent").unwrap();
+        let result = index.list_by_tag(&tag).unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn list_by_tag_returns_matching_note() {
+        let mut index = SqliteIndex::open_in_memory().unwrap();
+        let tag = Tag::new("rust").unwrap();
+        let note = Note::builder(test_note_id(), "Test", test_datetime(), test_datetime())
+            .tags(vec![tag.clone()])
+            .build()
+            .unwrap();
+        index
+            .upsert_note(&note, &test_content_hash(), &test_path())
+            .unwrap();
+
+        let result = index.list_by_tag(&tag).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].id(), note.id());
+    }
+
+    #[test]
+    fn list_by_tag_excludes_notes_without_tag() {
+        let mut index = SqliteIndex::open_in_memory().unwrap();
+        let rust_tag = Tag::new("rust").unwrap();
+        let python_tag = Tag::new("python").unwrap();
+
+        let note1 = Note::builder(
+            test_note_id(),
+            "Rust Note",
+            test_datetime(),
+            test_datetime(),
+        )
+        .tags(vec![rust_tag.clone()])
+        .build()
+        .unwrap();
+        index
+            .upsert_note(&note1, &test_content_hash(), &test_path())
+            .unwrap();
+
+        let note2 = Note::builder(
+            other_note_id(),
+            "Python Note",
+            test_datetime(),
+            test_datetime(),
+        )
+        .tags(vec![python_tag])
+        .build()
+        .unwrap();
+        index
+            .upsert_note(
+                &note2,
+                &test_content_hash(),
+                &PathBuf::from("notes/other.md"),
+            )
+            .unwrap();
+
+        let result = index.list_by_tag(&rust_tag).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].id(), note1.id());
+    }
+
+    #[test]
+    fn list_by_tag_returns_multiple_notes() {
+        let mut index = SqliteIndex::open_in_memory().unwrap();
+        let tag = Tag::new("rust").unwrap();
+
+        let note1 = Note::builder(test_note_id(), "Note 1", test_datetime(), test_datetime())
+            .tags(vec![tag.clone()])
+            .build()
+            .unwrap();
+        index
+            .upsert_note(&note1, &test_content_hash(), &test_path())
+            .unwrap();
+
+        let note2 = Note::builder(other_note_id(), "Note 2", test_datetime(), test_datetime())
+            .tags(vec![tag.clone()])
+            .build()
+            .unwrap();
+        index
+            .upsert_note(
+                &note2,
+                &test_content_hash(),
+                &PathBuf::from("notes/other.md"),
+            )
+            .unwrap();
+
+        let result = index.list_by_tag(&tag).unwrap();
+        assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn list_by_tag_returns_complete_indexed_note() {
+        let mut index = SqliteIndex::open_in_memory().unwrap();
+        let tag = Tag::new("rust").unwrap();
+        let topic = Topic::new("software").unwrap();
+        let path = PathBuf::from("notes/test.md");
+
+        let note = Note::builder(
+            test_note_id(),
+            "Complete Note",
+            test_datetime(),
+            test_datetime(),
+        )
+        .tags(vec![tag.clone()])
+        .topics(vec![topic.clone()])
+        .description(Some("A description"))
+        .build()
+        .unwrap();
+        index
+            .upsert_note(&note, &test_content_hash(), &path)
+            .unwrap();
+
+        let result = index.list_by_tag(&tag).unwrap();
+        assert_eq!(result.len(), 1);
+        let indexed = &result[0];
+        assert_eq!(indexed.title(), "Complete Note");
+        assert_eq!(indexed.tags(), &[tag]);
+        assert_eq!(indexed.topics(), &[topic]);
+        assert_eq!(indexed.path(), &path);
+    }
+
+    // ===========================================
+    // all_tags Tests
+    // ===========================================
+
+    #[test]
+    fn all_tags_returns_empty_when_no_tags() {
+        let index = SqliteIndex::open_in_memory().unwrap();
+        let result = index.all_tags().unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn all_tags_returns_single_tag_with_count() {
+        let mut index = SqliteIndex::open_in_memory().unwrap();
+        let tag = Tag::new("rust").unwrap();
+        let note = Note::builder(test_note_id(), "Test", test_datetime(), test_datetime())
+            .tags(vec![tag.clone()])
+            .build()
+            .unwrap();
+        index
+            .upsert_note(&note, &test_content_hash(), &test_path())
+            .unwrap();
+
+        let result = index.all_tags().unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].tag(), &tag);
+        assert_eq!(result[0].count(), 1);
+    }
+
+    #[test]
+    fn all_tags_counts_multiple_notes_per_tag() {
+        let mut index = SqliteIndex::open_in_memory().unwrap();
+        let tag = Tag::new("rust").unwrap();
+
+        let note1 = Note::builder(test_note_id(), "Note 1", test_datetime(), test_datetime())
+            .tags(vec![tag.clone()])
+            .build()
+            .unwrap();
+        index
+            .upsert_note(&note1, &test_content_hash(), &test_path())
+            .unwrap();
+
+        let note2 = Note::builder(other_note_id(), "Note 2", test_datetime(), test_datetime())
+            .tags(vec![tag.clone()])
+            .build()
+            .unwrap();
+        index
+            .upsert_note(
+                &note2,
+                &test_content_hash(),
+                &PathBuf::from("notes/other.md"),
+            )
+            .unwrap();
+
+        let result = index.all_tags().unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].count(), 2);
+    }
+
+    #[test]
+    fn all_tags_returns_multiple_tags_sorted() {
+        let mut index = SqliteIndex::open_in_memory().unwrap();
+        let rust_tag = Tag::new("rust").unwrap();
+        let python_tag = Tag::new("python").unwrap();
+
+        let note = Note::builder(test_note_id(), "Test", test_datetime(), test_datetime())
+            .tags(vec![rust_tag.clone(), python_tag.clone()])
+            .build()
+            .unwrap();
+        index
+            .upsert_note(&note, &test_content_hash(), &test_path())
+            .unwrap();
+
+        let result = index.all_tags().unwrap();
+        assert_eq!(result.len(), 2);
+        // Alphabetically sorted: python, rust
+        assert_eq!(result[0].tag(), &python_tag);
+        assert_eq!(result[1].tag(), &rust_tag);
+    }
+
+    #[test]
+    fn all_tags_excludes_orphaned_tags() {
+        let mut index = SqliteIndex::open_in_memory().unwrap();
+        let tag = Tag::new("rust").unwrap();
+
+        let note = Note::builder(test_note_id(), "Test", test_datetime(), test_datetime())
+            .tags(vec![tag.clone()])
+            .build()
+            .unwrap();
+        index
+            .upsert_note(&note, &test_content_hash(), &test_path())
+            .unwrap();
+        index.remove_note(note.id()).unwrap();
+
+        let result = index.all_tags().unwrap();
+        // Tag exists in DB but has no notes - should be excluded
+        assert!(result.is_empty());
     }
 }
