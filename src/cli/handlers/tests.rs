@@ -3099,3 +3099,342 @@ Content"#;
         assert!(parsed.note.links().is_empty());
     }
 }
+
+// ===========================================
+// handle_check tests
+// ===========================================
+
+mod handle_check_tests {
+    use crate::cli::CheckArgs;
+    use crate::cli::handlers::handle_check;
+    use tempfile::TempDir;
+
+    fn check_args() -> CheckArgs {
+        CheckArgs { fix: false }
+    }
+
+    fn valid_note_content(id_suffix: &str, title: &str) -> String {
+        format!(
+            r#"---
+id: 01HQ3K5M7NXJK4QZPW8V2R6T{id_suffix}
+title: {title}
+created: 2024-01-15T10:30:00Z
+modified: 2024-01-15T10:30:00Z
+topics:
+  - test/topic
+---
+
+Body content."#
+        )
+    }
+
+    fn orphan_note_content(id_suffix: &str, title: &str) -> String {
+        format!(
+            r#"---
+id: 01HQ3K5M7NXJK4QZPW8V2R6T{id_suffix}
+title: {title}
+created: 2024-01-15T10:30:00Z
+modified: 2024-01-15T10:30:00Z
+---
+
+Body content."#
+        )
+    }
+
+    fn note_with_link(id_suffix: &str, title: &str, target_id: &str) -> String {
+        format!(
+            r#"---
+id: 01HQ3K5M7NXJK4QZPW8V2R6T{id_suffix}
+title: {title}
+created: 2024-01-15T10:30:00Z
+modified: 2024-01-15T10:30:00Z
+topics:
+  - test/topic
+links:
+  - id: {target_id}
+    rel:
+      - see-also
+---
+
+Body content."#
+        )
+    }
+
+    // ===========================================
+    // Cycle 1: Empty Directory
+    // ===========================================
+
+    #[test]
+    fn handle_check_empty_directory_succeeds() {
+        let dir = TempDir::new().unwrap();
+        let args = check_args();
+
+        let result = handle_check(&args, dir.path());
+
+        assert!(result.is_ok());
+    }
+
+    // ===========================================
+    // Cycle 2: All Valid Notes
+    // ===========================================
+
+    #[test]
+    fn handle_check_all_valid_notes_returns_ok() {
+        let dir = TempDir::new().unwrap();
+
+        // Create two valid notes with unique IDs
+        std::fs::write(
+            dir.path().join("01HQ3K5M7N-note-a.md"),
+            valid_note_content("9A", "Note A"),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("01HQ3K5M7N-note-b.md"),
+            valid_note_content("9B", "Note B"),
+        )
+        .unwrap();
+
+        let args = check_args();
+        let result = handle_check(&args, dir.path());
+
+        assert!(result.is_ok());
+    }
+
+    // ===========================================
+    // Cycle 3: Parse Errors
+    // ===========================================
+
+    #[test]
+    fn handle_check_detects_parse_error() {
+        let dir = TempDir::new().unwrap();
+
+        // Create a file with invalid frontmatter
+        std::fs::write(
+            dir.path().join("01HQ3K5M7N-bad.md"),
+            "---\ninvalid yaml: [missing bracket\n---\nBody",
+        )
+        .unwrap();
+
+        let args = check_args();
+        let result = handle_check(&args, dir.path());
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn handle_check_continues_after_parse_error() {
+        let dir = TempDir::new().unwrap();
+
+        // Create one bad file and one good file
+        std::fs::write(
+            dir.path().join("01HQ3K5M7N-bad.md"),
+            "---\ninvalid yaml: [missing bracket\n---\nBody",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("01HQ3K5M7N-good.md"),
+            valid_note_content("9A", "Good Note"),
+        )
+        .unwrap();
+
+        let args = check_args();
+        let result = handle_check(&args, dir.path());
+
+        // Should fail due to parse error
+        assert!(result.is_err());
+    }
+
+    // ===========================================
+    // Cycle 4: Duplicate IDs
+    // ===========================================
+
+    #[test]
+    fn handle_check_detects_duplicate_ids() {
+        let dir = TempDir::new().unwrap();
+
+        // Create two notes with the same ID
+        std::fs::write(
+            dir.path().join("01HQ3K5M7N-first.md"),
+            valid_note_content("9A", "First Note"),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("01HQ3K5M7N-second.md"),
+            valid_note_content("9A", "Second Note"),
+        )
+        .unwrap();
+
+        let args = check_args();
+        let result = handle_check(&args, dir.path());
+
+        assert!(result.is_err());
+    }
+
+    // ===========================================
+    // Cycle 5: Broken Links
+    // ===========================================
+
+    #[test]
+    fn handle_check_detects_broken_links() {
+        let dir = TempDir::new().unwrap();
+
+        // Create a note with a link to a non-existent ID
+        std::fs::write(
+            dir.path().join("01HQ3K5M7N-note.md"),
+            note_with_link("9A", "Note A", "01ZZZZZZZZXJK4QZPW8V2R6T9X"),
+        )
+        .unwrap();
+
+        let args = check_args();
+        let result = handle_check(&args, dir.path());
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn handle_check_valid_links_pass() {
+        let dir = TempDir::new().unwrap();
+
+        // Create two notes where one links to the other
+        std::fs::write(
+            dir.path().join("01HQ3K5M7N-source.md"),
+            note_with_link("9A", "Source", "01HQ3K5M7NXJK4QZPW8V2R6T9B"),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("01HQ3K5M7N-target.md"),
+            valid_note_content("9B", "Target"),
+        )
+        .unwrap();
+
+        let args = check_args();
+        let result = handle_check(&args, dir.path());
+
+        assert!(result.is_ok());
+    }
+
+    // ===========================================
+    // Cycle 6: Orphaned Notes (Warnings)
+    // ===========================================
+
+    #[test]
+    fn handle_check_warnings_dont_cause_failure() {
+        let dir = TempDir::new().unwrap();
+
+        // Create an orphan note (no topics)
+        std::fs::write(
+            dir.path().join("01HQ3K5M7N-orphan.md"),
+            orphan_note_content("9A", "Orphan Note"),
+        )
+        .unwrap();
+
+        let args = check_args();
+        let result = handle_check(&args, dir.path());
+
+        // Warnings don't cause failure
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn handle_check_reports_orphaned_notes() {
+        let dir = TempDir::new().unwrap();
+
+        // Create one orphan and one valid note
+        std::fs::write(
+            dir.path().join("01HQ3K5M7N-orphan.md"),
+            orphan_note_content("9A", "Orphan"),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("01HQ3K5M7N-valid.md"),
+            valid_note_content("9B", "Valid"),
+        )
+        .unwrap();
+
+        let args = check_args();
+        let result = handle_check(&args, dir.path());
+
+        // Should still succeed (warnings don't fail)
+        assert!(result.is_ok());
+    }
+
+    // ===========================================
+    // Cycle 7: Output Formatting / Mixed Errors+Warnings
+    // ===========================================
+
+    #[test]
+    fn handle_check_errors_cause_failure_with_warnings_present() {
+        let dir = TempDir::new().unwrap();
+
+        // Create an orphan (warning) and duplicate IDs (error)
+        std::fs::write(
+            dir.path().join("01HQ3K5M7N-orphan.md"),
+            orphan_note_content("9A", "Orphan"),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("01HQ3K5M7N-dup1.md"),
+            valid_note_content("9B", "Dup 1"),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("01HQ3K5M7N-dup2.md"),
+            valid_note_content("9B", "Dup 2"),
+        )
+        .unwrap();
+
+        let args = check_args();
+        let result = handle_check(&args, dir.path());
+
+        // Should fail due to duplicate ID error
+        assert!(result.is_err());
+    }
+
+    // ===========================================
+    // Cycle 8: Edge Cases
+    // ===========================================
+
+    #[test]
+    fn handle_check_nonexistent_directory_returns_error() {
+        let args = check_args();
+        let result = handle_check(&args, std::path::Path::new("/nonexistent/path"));
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn handle_check_ignores_hidden_files() {
+        let dir = TempDir::new().unwrap();
+
+        // Create a hidden file that would fail parsing
+        std::fs::write(
+            dir.path().join(".hidden.md"),
+            "---\ninvalid yaml: [missing bracket\n---\nBody",
+        )
+        .unwrap();
+
+        // Create a valid visible note
+        std::fs::write(
+            dir.path().join("01HQ3K5M7N-visible.md"),
+            valid_note_content("9A", "Visible"),
+        )
+        .unwrap();
+
+        let args = check_args();
+        let result = handle_check(&args, dir.path());
+
+        // Should succeed because hidden files are ignored
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn handle_check_fix_flag_shows_warning() {
+        let dir = TempDir::new().unwrap();
+
+        let args = CheckArgs { fix: true };
+        let result = handle_check(&args, dir.path());
+
+        // Should still succeed, just with a warning
+        assert!(result.is_ok());
+    }
+}
