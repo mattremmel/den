@@ -494,6 +494,36 @@ pub enum ResolveResult {
     NotFound,
 }
 
+/// Prints detailed information about ambiguous notes to help distinguish them.
+fn print_ambiguous_notes(identifier: &str, notes: &[IndexedNote]) {
+    eprintln!(
+        "Ambiguous: '{}' matches {} notes:",
+        identifier,
+        notes.len()
+    );
+    for note in notes {
+        eprintln!("  {} - {}", note.id().prefix(), note.title());
+
+        // Print description if present
+        if let Some(desc) = note.description() {
+            eprintln!("      {}", desc);
+        }
+
+        // Print aliases if present
+        if !note.aliases().is_empty() {
+            eprintln!("      aliases: {}", note.aliases().join(", "));
+        }
+
+        // Print tags if present
+        if !note.tags().is_empty() {
+            let tags: Vec<_> = note.tags().iter().map(|t| t.as_str()).collect();
+            eprintln!("      tags: {}", tags.join(", "));
+        }
+    }
+    eprintln!();
+    eprintln!("Use the ID prefix to specify which note you mean.");
+}
+
 /// Resolves a note identifier to a unique note.
 ///
 /// Resolution order:
@@ -599,16 +629,7 @@ pub fn handle_show(args: &ShowArgs, notes_dir: &Path) -> Result<()> {
             Ok(())
         }
         ResolveResult::Ambiguous(notes) => {
-            eprintln!(
-                "Ambiguous: '{}' matches {} notes:",
-                args.note,
-                notes.len()
-            );
-            for note in &notes {
-                eprintln!("  {} - {}", note.id().prefix(), note.title());
-            }
-            eprintln!();
-            eprintln!("Use the ID prefix to specify which note you mean.");
+            print_ambiguous_notes(&args.note, &notes);
             bail!("ambiguous note identifier");
         }
         ResolveResult::NotFound => {
@@ -649,16 +670,7 @@ fn handle_edit_impl<E: EditorLauncher>(
             Ok(())
         }
         ResolveResult::Ambiguous(notes) => {
-            eprintln!(
-                "Ambiguous: '{}' matches {} notes:",
-                args.note,
-                notes.len()
-            );
-            for n in &notes {
-                eprintln!("  {} - {}", n.id().prefix(), n.title());
-            }
-            eprintln!();
-            eprintln!("Use the ID prefix to specify which note you mean.");
+            print_ambiguous_notes(&args.note, &notes);
             bail!("ambiguous note identifier");
         }
         ResolveResult::NotFound => {

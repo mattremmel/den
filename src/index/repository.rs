@@ -55,6 +55,7 @@ pub struct IndexedNote {
     path: PathBuf,
     content_hash: ContentHash,
     topics: Vec<Topic>,
+    aliases: Vec<String>,
     tags: Vec<Tag>,
 }
 
@@ -70,6 +71,7 @@ impl IndexedNote {
         path: PathBuf,
         content_hash: ContentHash,
         topics: Vec<Topic>,
+        aliases: Vec<String>,
         tags: Vec<Tag>,
     ) -> Self {
         Self {
@@ -81,6 +83,7 @@ impl IndexedNote {
             path,
             content_hash,
             topics,
+            aliases,
             tags,
         }
     }
@@ -125,6 +128,11 @@ impl IndexedNote {
         &self.topics
     }
 
+    /// Returns the note's aliases.
+    pub fn aliases(&self) -> &[String] {
+        &self.aliases
+    }
+
     /// Returns the note's tags.
     pub fn tags(&self) -> &[Tag] {
         &self.tags
@@ -152,6 +160,7 @@ impl IndexedNote {
             path,
             content_hash,
             topics: Vec::new(),
+            aliases: Vec::new(),
             tags: Vec::new(),
         }
     }
@@ -167,6 +176,7 @@ pub struct IndexedNoteBuilder {
     path: PathBuf,
     content_hash: ContentHash,
     topics: Vec<Topic>,
+    aliases: Vec<String>,
     tags: Vec<Tag>,
 }
 
@@ -180,6 +190,12 @@ impl IndexedNoteBuilder {
     /// Sets the topics.
     pub fn topics(mut self, topics: Vec<Topic>) -> Self {
         self.topics = topics;
+        self
+    }
+
+    /// Sets the aliases.
+    pub fn aliases(mut self, aliases: Vec<String>) -> Self {
+        self.aliases = aliases;
         self
     }
 
@@ -200,6 +216,7 @@ impl IndexedNoteBuilder {
             path: self.path,
             content_hash: self.content_hash,
             topics: self.topics,
+            aliases: self.aliases,
             tags: self.tags,
         }
     }
@@ -484,6 +501,7 @@ mod tests {
             hash.clone(),
             vec![],
             vec![],
+            vec![],
         );
 
         assert_eq!(note.id(), &id);
@@ -494,6 +512,7 @@ mod tests {
         assert_eq!(note.path(), path.as_path());
         assert_eq!(note.content_hash(), &hash);
         assert!(note.topics().is_empty());
+        assert!(note.aliases().is_empty());
         assert!(note.tags().is_empty());
     }
 
@@ -507,6 +526,7 @@ mod tests {
             test_datetime(),
             PathBuf::from("test.md"),
             test_content_hash(),
+            vec![],
             vec![],
             vec![],
         );
@@ -529,6 +549,7 @@ mod tests {
             test_content_hash(),
             topics.clone(),
             vec![],
+            vec![],
         );
         assert_eq!(note.topics(), &topics);
     }
@@ -544,6 +565,7 @@ mod tests {
             test_datetime(),
             PathBuf::from("test.md"),
             test_content_hash(),
+            vec![],
             vec![],
             tags.clone(),
         );

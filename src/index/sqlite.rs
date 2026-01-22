@@ -196,6 +196,14 @@ impl IndexRepository for SqliteIndex {
 
         let path = PathBuf::from(path_str);
 
+        // Query aliases from aliases table
+        let aliases: Vec<String> = self
+            .conn
+            .prepare("SELECT alias FROM aliases WHERE note_id = ?")?
+            .query_map([id.to_string()], |row| row.get::<_, String>(0))?
+            .filter_map(|r| r.ok())
+            .collect();
+
         // Query topics via JOIN
         let topics: Vec<Topic> = self
             .conn
@@ -222,7 +230,7 @@ impl IndexRepository for SqliteIndex {
             builder = builder.description(desc);
         }
 
-        builder = builder.topics(topics).tags(tags);
+        builder = builder.topics(topics).aliases(aliases).tags(tags);
 
         Ok(Some(builder.build()))
     }
@@ -275,6 +283,8 @@ impl IndexRepository for SqliteIndex {
             .execute("DELETE FROM note_topics WHERE note_id = ?", [&id_str])?;
         tx.conn
             .execute("DELETE FROM note_tags WHERE note_id = ?", [&id_str])?;
+        tx.conn
+            .execute("DELETE FROM aliases WHERE note_id = ?", [&id_str])?;
 
         // 3. Insert topics (OR IGNORE) and junctions
         for topic in note.topics() {
@@ -300,6 +310,14 @@ impl IndexRepository for SqliteIndex {
                 "INSERT INTO note_tags (note_id, tag_id)
                  SELECT ?, id FROM tags WHERE name = ?",
                 [&id_str, tag.as_str()],
+            )?;
+        }
+
+        // 5. Insert aliases
+        for alias in note.aliases() {
+            tx.conn.execute(
+                "INSERT INTO aliases (note_id, alias) VALUES (?, ?)",
+                [&id_str, alias],
             )?;
         }
 
