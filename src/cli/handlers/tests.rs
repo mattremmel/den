@@ -2,7 +2,7 @@ use super::*;
 use crate::cli::config::Config;
 use crate::cli::output::OutputFormat;
 use crate::cli::{
-    BacklinksArgs, EditArgs, NewArgs, ShowArgs, TagArgs, TagsArgs, TopicsArgs, UntagArgs,
+    BacklinksArgs, EditArgs, NewArgs, RelsArgs, ShowArgs, TagArgs, TagsArgs, TopicsArgs, UntagArgs,
 };
 use crate::domain::{NoteId, Tag, Topic};
 use crate::index::{IndexRepository, IndexedNote, SearchResult};
@@ -1256,6 +1256,127 @@ Body
             format: OutputFormat::Human,
         };
         let result = handle_tags(&args, Path::new("/nonexistent/path"));
+        assert!(result.is_err());
+    }
+}
+
+// ===========================================
+// handle_rels tests
+// ===========================================
+
+mod handle_rels_tests {
+    use super::*;
+    use crate::index::{IndexBuilder, SqliteIndex};
+    use tempfile::TempDir;
+
+    fn setup_empty_index() -> TempDir {
+        let dir = TempDir::new().unwrap();
+        std::fs::create_dir_all(dir.path().join(".index")).unwrap();
+        let db_path = dir.path().join(".index/notes.db");
+        let _ = SqliteIndex::open(&db_path).unwrap();
+        dir
+    }
+
+    fn setup_index_with_links(rels: &[&str]) -> TempDir {
+        let dir = TempDir::new().unwrap();
+        std::fs::create_dir_all(dir.path().join(".index")).unwrap();
+
+        // Create a note with a link using the specified rels
+        let rels_yaml = rels
+            .iter()
+            .map(|r| format!("      - {}", r))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let note = format!(
+            r#"---
+id: 01HQ3K5M7NXJK4QZPW8V2R6T9A
+title: Test Note
+created: 2024-01-15T10:30:00Z
+modified: 2024-01-15T10:30:00Z
+links:
+  - target: 01HQ3K5M7NXJK4QZPW8V2R6T9B
+    rel:
+{}
+---
+Body
+"#,
+            rels_yaml
+        );
+        std::fs::write(dir.path().join("01HQ3K5M7N-test-note.md"), note).unwrap();
+
+        // Build index
+        let db_path = dir.path().join(".index/notes.db");
+        let mut index = SqliteIndex::open(&db_path).unwrap();
+        IndexBuilder::new(dir.path().to_path_buf())
+            .full_rebuild(&mut index)
+            .unwrap();
+
+        dir
+    }
+
+    #[test]
+    fn handle_rels_empty_index() {
+        let dir = setup_empty_index();
+        let args = RelsArgs {
+            counts: false,
+            format: OutputFormat::Human,
+        };
+        let result = handle_rels(&args, dir.path());
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn handle_rels_lists_rels_sorted() {
+        let dir = setup_index_with_links(&["see-also", "parent", "child"]);
+        let args = RelsArgs {
+            counts: false,
+            format: OutputFormat::Human,
+        };
+        let result = handle_rels(&args, dir.path());
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn handle_rels_with_counts() {
+        let dir = setup_index_with_links(&["parent", "see-also"]);
+        let args = RelsArgs {
+            counts: true,
+            format: OutputFormat::Human,
+        };
+        let result = handle_rels(&args, dir.path());
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn handle_rels_json_output() {
+        let dir = setup_index_with_links(&["parent", "child"]);
+        let args = RelsArgs {
+            counts: true,
+            format: OutputFormat::Json,
+        };
+        let result = handle_rels(&args, dir.path());
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn handle_rels_paths_output() {
+        let dir = setup_index_with_links(&["parent"]);
+        let args = RelsArgs {
+            counts: false,
+            format: OutputFormat::Paths,
+        };
+        let result = handle_rels(&args, dir.path());
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn handle_rels_fails_with_nonexistent_dir() {
+        let args = RelsArgs {
+            counts: false,
+            format: OutputFormat::Human,
+        };
+        let result = handle_rels(&args, Path::new("/nonexistent/path"));
         assert!(result.is_err());
     }
 }

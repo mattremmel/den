@@ -339,7 +339,35 @@ impl TagWithCount {
 }
 
 // ===========================================
-// Cycle 8: IndexRepository Trait
+// Cycle 8: RelWithCount Type
+// ===========================================
+
+/// A relationship type with associated link count.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RelWithCount {
+    rel: Rel,
+    count: u32,
+}
+
+impl RelWithCount {
+    /// Creates a new RelWithCount.
+    pub fn new(rel: Rel, count: u32) -> Self {
+        Self { rel, count }
+    }
+
+    /// Returns the relationship type.
+    pub fn rel(&self) -> &Rel {
+        &self.rel
+    }
+
+    /// Returns the count of links with this relationship type.
+    pub fn count(&self) -> u32 {
+        self.count
+    }
+}
+
+// ===========================================
+// Cycle 9: IndexRepository Trait
 // ===========================================
 
 /// Repository trait for the notes index.
@@ -381,6 +409,9 @@ pub trait IndexRepository {
 
     /// Returns all tags with note counts.
     fn all_tags(&self) -> IndexResult<Vec<TagWithCount>>;
+
+    /// Returns all relationship types with link counts.
+    fn all_rels(&self) -> IndexResult<Vec<RelWithCount>>;
 
     /// Gets content hash for incremental indexing.
     fn get_content_hash(&self, path: &Path) -> IndexResult<Option<ContentHash>>;
@@ -933,5 +964,50 @@ mod tests {
         let debug = format!("{:?}", twc);
         assert!(debug.contains("TagWithCount"));
         assert!(debug.contains("draft"));
+    }
+
+    // ===========================================
+    // Cycle 8: RelWithCount Type
+    // ===========================================
+
+    #[test]
+    fn rel_with_count_stores_rel_and_count() {
+        let rel = Rel::new("parent").unwrap();
+        let rwc = RelWithCount::new(rel.clone(), 5);
+
+        assert_eq!(rwc.rel(), &rel);
+        assert_eq!(rwc.count(), 5);
+    }
+
+    #[test]
+    fn rel_with_count_zero_count() {
+        let rel = Rel::new("unused").unwrap();
+        let rwc = RelWithCount::new(rel, 0);
+        assert_eq!(rwc.count(), 0);
+    }
+
+    #[test]
+    fn rel_with_count_clone() {
+        let rel = Rel::new("see-also").unwrap();
+        let rwc = RelWithCount::new(rel, 42);
+        let cloned = rwc.clone();
+        assert_eq!(rwc, cloned);
+    }
+
+    #[test]
+    fn rel_with_count_equality() {
+        let rel = Rel::new("parent").unwrap();
+        let rwc1 = RelWithCount::new(rel.clone(), 5);
+        let rwc2 = RelWithCount::new(rel, 5);
+        assert_eq!(rwc1, rwc2);
+    }
+
+    #[test]
+    fn rel_with_count_debug() {
+        let rel = Rel::new("parent").unwrap();
+        let rwc = RelWithCount::new(rel, 5);
+        let debug = format!("{:?}", rwc);
+        assert!(debug.contains("RelWithCount"));
+        assert!(debug.contains("parent"));
     }
 }

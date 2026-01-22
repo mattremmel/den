@@ -40,6 +40,6 @@ pub fn run() -> Result<()> {
         Command::Backlinks(args) => handle_backlinks(args, &notes_dir),
         Command::Link(args) => handle_link(args, &notes_dir),
         Command::Unlink(args) => handle_unlink(args, &notes_dir),
-        Command::Rels(args) => handle_rels(args),
+        Command::Rels(args) => handle_rels(args, &notes_dir),
     }
 }

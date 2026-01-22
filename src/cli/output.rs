@@ -51,6 +51,14 @@ pub struct TagListing {
     pub count: Option<usize>,
 }
 
+/// A relationship type with optional count.
+#[derive(Debug, Serialize)]
+pub struct RelListing {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub count: Option<usize>,
+}
+
 /// A search result in listing output.
 #[derive(Debug, Serialize)]
 pub struct SearchListing {

@@ -6,7 +6,7 @@ use std::path::Path;
 
 use super::resolve::{print_ambiguous_notes, resolve_note, ResolveResult};
 use super::{index_db_path, truncate_str};
-use crate::cli::output::{NoteListing, Output, OutputFormat};
+use crate::cli::output::{NoteListing, Output, OutputFormat, RelListing};
 use crate::cli::{BacklinksArgs, LinkArgs, RelsArgs, UnlinkArgs};
 use crate::domain::{Link, Note, NoteId, Rel};
 use crate::index::{IndexBuilder, IndexRepository, SqliteIndex};
@@ -348,8 +348,48 @@ pub fn handle_unlink(args: &UnlinkArgs, notes_dir: &Path) -> Result<()> {
     Ok(())
 }
 
-pub fn handle_rels(_args: &RelsArgs) -> Result<()> {
-    println!("rels: not yet implemented");
+pub fn handle_rels(args: &RelsArgs, notes_dir: &Path) -> Result<()> {
+    let db_path = index_db_path(notes_dir);
+    let index = SqliteIndex::open(&db_path)
+        .with_context(|| format!("failed to open index at {}", db_path.display()))?;
+
+    let rels = index.all_rels().with_context(|| "failed to list rels")?;
+
+    match args.format {
+        OutputFormat::Human => {
+            if rels.is_empty() {
+                println!("No relationship types found.");
+            } else {
+                for r in &rels {
+                    if args.counts {
+                        println!("{} ({})", r.rel(), r.count());
+                    } else {
+                        println!("{}", r.rel());
+                    }
+                }
+            }
+        }
+        OutputFormat::Json => {
+            let listings: Vec<RelListing> = rels
+                .iter()
+                .map(|r| RelListing {
+                    name: r.rel().to_string(),
+                    count: if args.counts {
+                        Some(r.count() as usize)
+                    } else {
+                        None
+                    },
+                })
+                .collect();
+            let out = Output::new(listings);
+            println!("{}", serde_json::to_string_pretty(&out)?);
+        }
+        OutputFormat::Paths => {
+            for r in &rels {
+                println!("{}", r.rel());
+            }
+        }
+    }
     Ok(())
 }
 

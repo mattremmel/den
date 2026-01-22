@@ -3,8 +3,8 @@
 use super::SqliteIndex;
 use crate::domain::{Note, NoteId, Rel, Tag, Topic};
 use crate::index::{
-    IndexError, IndexRepository, IndexResult, IndexedNote, SearchResult, TagWithCount,
-    TopicWithCount,
+    IndexError, IndexRepository, IndexResult, IndexedNote, RelWithCount, SearchResult,
+    TagWithCount, TopicWithCount,
 };
 use crate::infra::ContentHash;
 use chrono::{DateTime, Utc};
@@ -412,6 +412,30 @@ impl IndexRepository for SqliteIndex {
             .collect();
 
         Ok(tags)
+    }
+
+    fn all_rels(&self) -> IndexResult<Vec<RelWithCount>> {
+        let query = "SELECT rel, COUNT(*) as count
+                     FROM link_rels
+                     GROUP BY rel
+                     ORDER BY rel";
+
+        let mut stmt = self.conn.prepare(query)?;
+        let rels = stmt
+            .query_map([], |row| {
+                let rel_str: String = row.get(0)?;
+                let count: u32 = row.get(1)?;
+                Ok((rel_str, count))
+            })?
+            .filter_map(|r| r.ok())
+            .filter_map(|(rel_str, count)| {
+                Rel::new(&rel_str)
+                    .ok()
+                    .map(|rel| RelWithCount::new(rel, count))
+            })
+            .collect();
+
+        Ok(rels)
     }
 
     fn get_content_hash(&self, path: &Path) -> IndexResult<Option<ContentHash>> {

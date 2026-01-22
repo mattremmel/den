@@ -311,7 +311,7 @@ fn transaction_explicit_rollback() {
 // IndexRepository Tests - Test Helpers
 // ===========================================
 
-use crate::domain::{Note, NoteId, Rel, Tag, Topic};
+use crate::domain::{Link, Note, NoteId, Rel, Tag, Topic};
 use crate::index::IndexRepository;
 use crate::infra::ContentHash;
 use chrono::{DateTime, Utc};
@@ -1721,6 +1721,132 @@ fn all_tags_excludes_orphaned_tags() {
 
     let result = index.all_tags().unwrap();
     // Tag exists in DB but has no notes - should be excluded
+    assert!(result.is_empty());
+}
+
+// ===========================================
+// all_rels Tests
+// ===========================================
+
+#[test]
+fn all_rels_returns_empty_when_no_links() {
+    let index = SqliteIndex::open_in_memory().unwrap();
+    let result = index.all_rels().unwrap();
+    assert!(result.is_empty());
+}
+
+#[test]
+fn all_rels_returns_single_rel_with_count() {
+    let mut index = SqliteIndex::open_in_memory().unwrap();
+
+    let target_id: NoteId = "01HQ3K5M7NXJK4QZPW8V2R6T9B".parse().unwrap();
+    let link = Link::new(target_id, vec!["parent"]).unwrap();
+    let note = Note::builder(test_note_id(), "Test", test_datetime(), test_datetime())
+        .links(vec![link])
+        .build()
+        .unwrap();
+    index
+        .upsert_note(&note, &test_content_hash(), &test_path())
+        .unwrap();
+
+    let result = index.all_rels().unwrap();
+    assert_eq!(result.len(), 1);
+    assert_eq!(result[0].rel().as_str(), "parent");
+    assert_eq!(result[0].count(), 1);
+}
+
+#[test]
+fn all_rels_counts_each_link_once_per_rel() {
+    let mut index = SqliteIndex::open_in_memory().unwrap();
+
+    // A link with multiple rels counts once for each rel type
+    let target_id: NoteId = "01HQ3K5M7NXJK4QZPW8V2R6T9B".parse().unwrap();
+    let link = Link::new(target_id, vec!["parent", "see-also"]).unwrap();
+    let note = Note::builder(test_note_id(), "Test", test_datetime(), test_datetime())
+        .links(vec![link])
+        .build()
+        .unwrap();
+    index
+        .upsert_note(&note, &test_content_hash(), &test_path())
+        .unwrap();
+
+    let result = index.all_rels().unwrap();
+    assert_eq!(result.len(), 2);
+    // Each rel counts once
+    assert_eq!(result[0].count(), 1);
+    assert_eq!(result[1].count(), 1);
+}
+
+#[test]
+fn all_rels_counts_multiple_links_per_rel() {
+    let mut index = SqliteIndex::open_in_memory().unwrap();
+
+    // Two notes, each with a link using "parent" rel
+    let target_id: NoteId = "01HQ3K5M7NXJK4QZPW8V2R6T9B".parse().unwrap();
+    let link1 = Link::new(target_id.clone(), vec!["parent"]).unwrap();
+    let note1 = Note::builder(test_note_id(), "Note 1", test_datetime(), test_datetime())
+        .links(vec![link1])
+        .build()
+        .unwrap();
+    index
+        .upsert_note(&note1, &test_content_hash(), &test_path())
+        .unwrap();
+
+    let other_id: NoteId = "01HQ3K5M7NXJK4QZPW8V2R6T9C".parse().unwrap();
+    let link2 = Link::new(target_id, vec!["parent"]).unwrap();
+    let note2 = Note::builder(other_id, "Note 2", test_datetime(), test_datetime())
+        .links(vec![link2])
+        .build()
+        .unwrap();
+    index
+        .upsert_note(&note2, &test_content_hash(), &PathBuf::from("notes/other.md"))
+        .unwrap();
+
+    let result = index.all_rels().unwrap();
+    assert_eq!(result.len(), 1);
+    assert_eq!(result[0].rel().as_str(), "parent");
+    assert_eq!(result[0].count(), 2);
+}
+
+#[test]
+fn all_rels_returns_rels_sorted_alphabetically() {
+    let mut index = SqliteIndex::open_in_memory().unwrap();
+
+    let target_id: NoteId = "01HQ3K5M7NXJK4QZPW8V2R6T9B".parse().unwrap();
+    let link = Link::new(target_id, vec!["see-also", "parent", "child"]).unwrap();
+    let note = Note::builder(test_note_id(), "Test", test_datetime(), test_datetime())
+        .links(vec![link])
+        .build()
+        .unwrap();
+    index
+        .upsert_note(&note, &test_content_hash(), &test_path())
+        .unwrap();
+
+    let result = index.all_rels().unwrap();
+    assert_eq!(result.len(), 3);
+    // Alphabetically sorted: child, parent, see-also
+    assert_eq!(result[0].rel().as_str(), "child");
+    assert_eq!(result[1].rel().as_str(), "parent");
+    assert_eq!(result[2].rel().as_str(), "see-also");
+}
+
+#[test]
+fn all_rels_excludes_rels_from_deleted_notes() {
+    let mut index = SqliteIndex::open_in_memory().unwrap();
+
+    let target_id: NoteId = "01HQ3K5M7NXJK4QZPW8V2R6T9B".parse().unwrap();
+    let link = Link::new(target_id, vec!["parent"]).unwrap();
+    let note = Note::builder(test_note_id(), "Test", test_datetime(), test_datetime())
+        .links(vec![link])
+        .build()
+        .unwrap();
+    index
+        .upsert_note(&note, &test_content_hash(), &test_path())
+        .unwrap();
+    index.remove_note(note.id()).unwrap();
+
+    let result = index.all_rels().unwrap();
+    // Link deleted with note - rel should not appear
     assert!(result.is_empty());
 }
 
