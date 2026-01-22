@@ -501,8 +501,70 @@ impl IndexRepository for SqliteIndex {
         Ok(tags)
     }
 
-    fn get_content_hash(&self, _path: &Path) -> IndexResult<Option<ContentHash>> {
-        todo!("get_content_hash not yet implemented")
+    fn get_content_hash(&self, path: &Path) -> IndexResult<Option<ContentHash>> {
+        let path_str = path.to_string_lossy();
+        let mut stmt = self
+            .conn
+            .prepare("SELECT content_hash FROM notes WHERE path = ?")?;
+        let hash = stmt.query_row([&*path_str], |row| {
+            let hash_str: String = row.get(0)?;
+            Ok(hash_str)
+        });
+        match hash {
+            Ok(hash_str) => {
+                Ok(Some(ContentHash::from_hex(&hash_str).map_err(|e| {
+                    IndexError::InvalidQuery(format!("invalid hash: {}", e))
+                })?))
+            }
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(IndexError::Database(e)),
+        }
+    }
+}
+
+// ===========================================
+// Additional Methods for IndexBuilder
+// ===========================================
+
+impl SqliteIndex {
+    /// Returns all indexed paths with their content hashes.
+    ///
+    /// Used by IndexBuilder for incremental updates to detect changes.
+    pub fn all_indexed_paths(&self) -> IndexResult<Vec<(PathBuf, ContentHash)>> {
+        let mut stmt = self.conn.prepare("SELECT path, content_hash FROM notes")?;
+        let results = stmt
+            .query_map([], |row| {
+                let path: String = row.get(0)?;
+                let hash: String = row.get(1)?;
+                Ok((path, hash))
+            })?
+            .filter_map(|r| r.ok())
+            .filter_map(|(path, hash)| {
+                ContentHash::from_hex(&hash)
+                    .ok()
+                    .map(|h| (PathBuf::from(path), h))
+            })
+            .collect();
+        Ok(results)
+    }
+
+    /// Removes a note from the index by its file path.
+    ///
+    /// Returns `true` if a note was removed, `false` if no note was found at that path.
+    pub fn remove_by_path(&mut self, path: &Path) -> IndexResult<bool> {
+        let rows = self.conn.execute(
+            "DELETE FROM notes WHERE path = ?",
+            [path.to_string_lossy().as_ref()],
+        )?;
+        Ok(rows > 0)
+    }
+
+    /// Clears all notes from the index.
+    ///
+    /// Used by IndexBuilder for full rebuilds.
+    pub fn clear(&mut self) -> IndexResult<()> {
+        self.conn.execute("DELETE FROM notes", [])?;
+        Ok(())
     }
 }
 
@@ -2508,12 +2570,7 @@ mod tests {
             .unwrap();
     }
 
-    fn insert_note_with_description(
-        index: &SqliteIndex,
-        id: &str,
-        title: &str,
-        description: &str,
-    ) {
+    fn insert_note_with_description(index: &SqliteIndex, id: &str, title: &str, description: &str) {
         index
             .conn()
             .execute(
@@ -2558,7 +2615,12 @@ mod tests {
     #[test]
     fn search_returns_empty_when_no_matches() {
         let index = SqliteIndex::open_in_memory().unwrap();
-        insert_note_with_body(&index, "01HQ3K5M7NXJK4QZPW8V2R6T9Y", "Rust Guide", "Learn rust");
+        insert_note_with_body(
+            &index,
+            "01HQ3K5M7NXJK4QZPW8V2R6T9Y",
+            "Rust Guide",
+            "Learn rust",
+        );
 
         let results = index.search("nonexistent").unwrap();
         assert!(results.is_empty());
@@ -2567,7 +2629,12 @@ mod tests {
     #[test]
     fn search_empty_query_returns_empty() {
         let index = SqliteIndex::open_in_memory().unwrap();
-        insert_note_with_body(&index, "01HQ3K5M7NXJK4QZPW8V2R6T9Y", "Rust Guide", "Learn rust");
+        insert_note_with_body(
+            &index,
+            "01HQ3K5M7NXJK4QZPW8V2R6T9Y",
+            "Rust Guide",
+            "Learn rust",
+        );
 
         let results = index.search("").unwrap();
         assert!(results.is_empty());
@@ -2576,7 +2643,12 @@ mod tests {
     #[test]
     fn search_whitespace_query_returns_empty() {
         let index = SqliteIndex::open_in_memory().unwrap();
-        insert_note_with_body(&index, "01HQ3K5M7NXJK4QZPW8V2R6T9Y", "Rust Guide", "Learn rust");
+        insert_note_with_body(
+            &index,
+            "01HQ3K5M7NXJK4QZPW8V2R6T9Y",
+            "Rust Guide",
+            "Learn rust",
+        );
 
         let results = index.search("   \t\n  ").unwrap();
         assert!(results.is_empty());
@@ -2589,7 +2661,12 @@ mod tests {
     #[test]
     fn search_returns_single_match() {
         let index = SqliteIndex::open_in_memory().unwrap();
-        insert_note_with_body(&index, "01HQ3K5M7NXJK4QZPW8V2R6T9Y", "Rust Guide", "Learn rust");
+        insert_note_with_body(
+            &index,
+            "01HQ3K5M7NXJK4QZPW8V2R6T9Y",
+            "Rust Guide",
+            "Learn rust",
+        );
 
         let results = index.search("rust").unwrap();
         assert_eq!(results.len(), 1);
@@ -2642,7 +2719,10 @@ mod tests {
         let indexed_note = results[0].note();
         assert_eq!(indexed_note.id(), note.id());
         assert_eq!(indexed_note.title(), "Rust Guide");
-        assert_eq!(indexed_note.description(), Some("A comprehensive rust guide"));
+        assert_eq!(
+            indexed_note.description(),
+            Some("A comprehensive rust guide")
+        );
         assert_eq!(indexed_note.topics(), &[topic]);
         assert_eq!(indexed_note.tags(), &[tag]);
     }
@@ -2677,7 +2757,12 @@ mod tests {
     #[test]
     fn search_rank_is_positive() {
         let index = SqliteIndex::open_in_memory().unwrap();
-        insert_note_with_body(&index, "01HQ3K5M7NXJK4QZPW8V2R6T9Y", "Rust Guide", "Learn rust");
+        insert_note_with_body(
+            &index,
+            "01HQ3K5M7NXJK4QZPW8V2R6T9Y",
+            "Rust Guide",
+            "Learn rust",
+        );
 
         let results = index.search("rust").unwrap();
         assert_eq!(results.len(), 1);
@@ -2706,7 +2791,10 @@ mod tests {
 
         // Find title match and body match
         let title_result = results.iter().find(|r| r.note().title() == "rust").unwrap();
-        let body_result = results.iter().find(|r| r.note().title() == "other title").unwrap();
+        let body_result = results
+            .iter()
+            .find(|r| r.note().title() == "other title")
+            .unwrap();
 
         assert!(
             title_result.rank() > body_result.rank(),
@@ -2727,12 +2815,7 @@ mod tests {
             "other content",
         );
         // Note B: keyword in description only
-        insert_note_with_description(
-            &index,
-            "01HQ3K5M7NXJK4QZPW8V2R6T9B",
-            "other title",
-            "rust",
-        );
+        insert_note_with_description(&index, "01HQ3K5M7NXJK4QZPW8V2R6T9B", "other title", "rust");
 
         let results = index.search("rust").unwrap();
         assert_eq!(results.len(), 2);
@@ -2758,7 +2841,12 @@ mod tests {
     #[test]
     fn search_invalid_fts_query_returns_error() {
         let index = SqliteIndex::open_in_memory().unwrap();
-        insert_note_with_body(&index, "01HQ3K5M7NXJK4QZPW8V2R6T9Y", "Rust Guide", "Learn rust");
+        insert_note_with_body(
+            &index,
+            "01HQ3K5M7NXJK4QZPW8V2R6T9Y",
+            "Rust Guide",
+            "Learn rust",
+        );
 
         // FTS5 rejects queries that start with AND/OR operators
         let result = index.search("AND hello");
@@ -2862,7 +2950,12 @@ mod tests {
     #[test]
     fn search_is_case_insensitive() {
         let index = SqliteIndex::open_in_memory().unwrap();
-        insert_note_with_body(&index, "01HQ3K5M7NXJK4QZPW8V2R6T9Y", "Rust Guide", "Learn Rust");
+        insert_note_with_body(
+            &index,
+            "01HQ3K5M7NXJK4QZPW8V2R6T9Y",
+            "Rust Guide",
+            "Learn Rust",
+        );
 
         // Search with lowercase should find uppercase
         let results = index.search("rust").unwrap();
