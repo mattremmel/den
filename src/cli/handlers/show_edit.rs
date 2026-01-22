@@ -1,11 +1,11 @@
 //! Show and Edit command handlers.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use std::path::Path;
 
 use super::index_db_path;
 use super::new::{open_in_editor, update_modified_timestamp};
-use super::resolve::{print_ambiguous_notes, resolve_note, ResolveResult};
+use super::resolve::{ResolveResult, print_ambiguous_notes, resolve_note};
 use crate::cli::config::Config;
 use crate::cli::{EditArgs, ShowArgs};
 use crate::index::{IndexBuilder, SqliteIndex};

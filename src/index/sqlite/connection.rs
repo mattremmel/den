@@ -1,7 +1,7 @@
 //! Connection management for SqliteIndex.
 
-use super::transaction::Transaction;
 use super::SqliteIndex;
+use super::transaction::Transaction;
 use crate::index::{IndexError, IndexResult, create_schema};
 use rusqlite::Connection;
 use std::fs;

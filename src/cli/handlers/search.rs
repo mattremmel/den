@@ -6,8 +6,8 @@ use std::path::Path;
 
 use super::index_db_path;
 use super::list::{note_matches_topic, parse_topic_filter};
-use crate::cli::output::{Output, OutputFormat, SearchListing};
 use crate::cli::SearchArgs;
+use crate::cli::output::{Output, OutputFormat, SearchListing};
 use crate::domain::{Tag, Topic};
 use crate::index::{IndexRepository, SearchResult, SqliteIndex};
 

@@ -1,13 +1,13 @@
 //! New note command handler.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use chrono::Utc;
 use std::path::Path;
 use std::process::Command;
 
 use super::index_db_path;
-use crate::cli::config::Config;
 use crate::cli::NewArgs;
+use crate::cli::config::Config;
 use crate::domain::{Note, NoteId, Tag, Topic};
 use crate::index::{IndexBuilder, SqliteIndex};
 use crate::infra::{generate_filename, read_note, write_note};

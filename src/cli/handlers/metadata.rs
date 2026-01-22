@@ -1,11 +1,11 @@
 //! Metadata command handlers (topics, tags, tag, untag).
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use chrono::Utc;
 use std::path::Path;
 
 use super::index_db_path;
-use super::resolve::{print_ambiguous_notes, resolve_note, ResolveResult};
+use super::resolve::{ResolveResult, print_ambiguous_notes, resolve_note};
 use crate::cli::output::{Output, OutputFormat, TagListing, TopicListing};
 use crate::cli::{TagArgs, TagsArgs, TopicsArgs, UntagArgs};
 use crate::domain::{Note, Tag};

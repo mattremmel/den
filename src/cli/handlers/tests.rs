@@ -7,7 +7,7 @@ use crate::cli::{
 use crate::domain::{NoteId, Tag, Topic};
 use crate::index::{IndexRepository, IndexedNote, SearchResult};
 use crate::infra::ContentHash;
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use chrono::{DateTime, Utc};
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -136,11 +136,8 @@ fn note_matches_topic_descendant_no_match_without_flag() {
 
 #[test]
 fn note_matches_topic_parent_no_match() {
-    let note = sample_indexed_note_with_topics(
-        "9A",
-        "Rust Guide",
-        vec![Topic::new("software").unwrap()],
-    );
+    let note =
+        sample_indexed_note_with_topics("9A", "Rust Guide", vec![Topic::new("software").unwrap()]);
     let topic = Topic::new("software/rust").unwrap();
     // Parent topic does not match child filter
     assert!(!note_matches_topic(&note, &topic, true));
@@ -293,26 +290,14 @@ fn search_filters_by_tags_and_logic() {
 
 #[test]
 fn search_preserves_rank_order_after_filtering() {
-    let note1 = sample_indexed_note_with_topics(
-        "9A",
-        "High Rank",
-        vec![Topic::new("software").unwrap()],
-    );
-    let note2 = sample_indexed_note_with_topics(
-        "9B",
-        "Medium Rank",
-        vec![Topic::new("software").unwrap()],
-    );
-    let note3 = sample_indexed_note_with_topics(
-        "9C",
-        "Low Rank",
-        vec![Topic::new("software").unwrap()],
-    );
-    let note4 = sample_indexed_note_with_topics(
-        "9D",
-        "Filtered Out",
-        vec![Topic::new("other").unwrap()],
-    );
+    let note1 =
+        sample_indexed_note_with_topics("9A", "High Rank", vec![Topic::new("software").unwrap()]);
+    let note2 =
+        sample_indexed_note_with_topics("9B", "Medium Rank", vec![Topic::new("software").unwrap()]);
+    let note3 =
+        sample_indexed_note_with_topics("9C", "Low Rank", vec![Topic::new("software").unwrap()]);
+    let note4 =
+        sample_indexed_note_with_topics("9D", "Filtered Out", vec![Topic::new("other").unwrap()]);
 
     // Results in rank order
     let results = vec![
@@ -2559,7 +2544,12 @@ Body content.
         };
         let result = handle_link(&args, dir.path());
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("at least one --rel"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("at least one --rel")
+        );
     }
 
     #[test]
@@ -2668,11 +2658,7 @@ Body content.
     fn handle_link_target_not_found_valid_ulid_creates_broken_link() {
         let dir = setup_two_notes();
         // Use a valid ULID that doesn't exist in the index
-        let args = test_link_args(
-            "Source Note",
-            "01HZ9Z9Z9ZXJK4QZPW8V2R6T9Z",
-            vec!["parent"],
-        );
+        let args = test_link_args("Source Note", "01HZ9Z9Z9ZXJK4QZPW8V2R6T9Z", vec!["parent"]);
         let result = handle_link(&args, dir.path());
         assert!(result.is_ok());
 
@@ -2740,8 +2726,12 @@ Body content.
     #[test]
     fn handle_link_creates_link_with_context() {
         let dir = setup_two_notes();
-        let args =
-            test_link_args_with_context("Source Note", "Target Note", vec!["parent"], "Some context");
+        let args = test_link_args_with_context(
+            "Source Note",
+            "Target Note",
+            vec!["parent"],
+            "Some context",
+        );
         let result = handle_link(&args, dir.path());
         assert!(result.is_ok());
 

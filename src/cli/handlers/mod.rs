@@ -23,8 +23,8 @@ pub use index::handle_index;
 pub use links::{handle_backlinks, handle_link, handle_rels, handle_unlink};
 pub use list::handle_list;
 pub use metadata::{handle_tag, handle_tags, handle_topics, handle_untag};
-pub use new::{create_new_note, handle_new, NewNoteResult};
-pub use resolve::{resolve_note, ResolveResult};
+pub use new::{NewNoteResult, create_new_note, handle_new};
+pub use resolve::{ResolveResult, resolve_note};
 pub use search::handle_search;
 pub use show_edit::{handle_edit, handle_show};
 
@@ -34,7 +34,7 @@ pub(crate) use list::{note_matches_topic, parse_topic_filter};
 #[cfg(test)]
 pub(crate) use search::strip_html_tags;
 #[cfg(test)]
-pub(crate) use show_edit::{handle_edit_impl, EditorLauncher};
+pub(crate) use show_edit::{EditorLauncher, handle_edit_impl};
 
 // ===========================================
 // Shared Utilities

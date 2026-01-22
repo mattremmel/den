@@ -5,9 +5,9 @@ use std::collections::HashSet;
 use std::path::Path;
 
 use super::{index_db_path, truncate_str};
+use crate::cli::ListArgs;
 use crate::cli::date_filter::DateFilter;
 use crate::cli::output::{NoteListing, Output, OutputFormat};
-use crate::cli::ListArgs;
 use crate::domain::{Tag, Topic};
 use crate::index::{IndexRepository, IndexedNote, SqliteIndex};
 

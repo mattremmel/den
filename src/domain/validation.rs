@@ -32,7 +32,11 @@ impl ValidationIssue {
     }
 
     /// Creates a duplicate ID issue.
-    pub fn duplicate_id(path: impl Into<PathBuf>, id: NoteId, first_path: impl Into<PathBuf>) -> Self {
+    pub fn duplicate_id(
+        path: impl Into<PathBuf>,
+        id: NoteId,
+        first_path: impl Into<PathBuf>,
+    ) -> Self {
         Self::new(
             path,
             ValidationKind::DuplicateId {
@@ -265,11 +269,8 @@ mod tests {
 
     #[test]
     fn creates_duplicate_id_issue() {
-        let issue = ValidationIssue::duplicate_id(
-            "notes/second.md",
-            test_note_id(),
-            "notes/first.md",
-        );
+        let issue =
+            ValidationIssue::duplicate_id("notes/second.md", test_note_id(), "notes/first.md");
 
         assert_eq!(issue.path, PathBuf::from("notes/second.md"));
         assert!(issue.is_duplicate_id());
@@ -326,11 +327,8 @@ mod tests {
 
     #[test]
     fn formats_duplicate_id() {
-        let issue = ValidationIssue::duplicate_id(
-            "notes/second.md",
-            test_note_id(),
-            "notes/first.md",
-        );
+        let issue =
+            ValidationIssue::duplicate_id("notes/second.md", test_note_id(), "notes/first.md");
 
         let display = issue.to_string();
         assert!(display.contains("notes/second.md"));
@@ -410,7 +408,11 @@ mod tests {
             "a.md",
             ValidationKind::ParseError("bad".to_string()),
         ));
-        summary.add(ValidationIssue::duplicate_id("b.md", test_note_id(), "c.md"));
+        summary.add(ValidationIssue::duplicate_id(
+            "b.md",
+            test_note_id(),
+            "c.md",
+        ));
         summary.add(ValidationIssue::broken_link("d.md", other_note_id()));
         summary.add(ValidationIssue::orphaned("e.md"));
 

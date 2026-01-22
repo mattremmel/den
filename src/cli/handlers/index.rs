@@ -3,7 +3,7 @@
 use anyhow::{Context, Result};
 use std::path::Path;
 
-use super::{index_db_path, ConsoleReporter};
+use super::{ConsoleReporter, index_db_path};
 use crate::cli::IndexArgs;
 use crate::index::{IndexBuilder, SqliteIndex};
 

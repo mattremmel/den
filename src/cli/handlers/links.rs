@@ -1,10 +1,10 @@
 //! Link-related command handlers (backlinks, link, unlink, rels).
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use chrono::Utc;
 use std::path::Path;
 
-use super::resolve::{print_ambiguous_notes, resolve_note, ResolveResult};
+use super::resolve::{ResolveResult, print_ambiguous_notes, resolve_note};
 use super::{index_db_path, truncate_str};
 use crate::cli::output::{NoteListing, Output, OutputFormat, RelListing};
 use crate::cli::{BacklinksArgs, LinkArgs, RelsArgs, UnlinkArgs};
@@ -123,10 +123,12 @@ pub fn handle_link(args: &LinkArgs, notes_dir: &Path) -> Result<()> {
             print_ambiguous_notes(&args.target, &notes);
             bail!("ambiguous target note identifier");
         }
-        ResolveResult::NotFound => args
-            .target
-            .parse::<NoteId>()
-            .map_err(|_| anyhow::anyhow!("target not found and not a valid note ID: '{}'", args.target))?,
+        ResolveResult::NotFound => args.target.parse::<NoteId>().map_err(|_| {
+            anyhow::anyhow!(
+                "target not found and not a valid note ID: '{}'",
+                args.target
+            )
+        })?,
     };
 
     // 5. Read source note from disk
@@ -231,10 +233,11 @@ fn merge_or_add_link(existing: &[Link], new: &Link) -> (Vec<Link>, bool) {
                 ctx,
             )
             .unwrap(),
-            None => {
-                Link::new(new.target().clone(), merged_rels.iter().map(|r| r.as_str()).collect())
-                    .unwrap()
-            }
+            None => Link::new(
+                new.target().clone(),
+                merged_rels.iter().map(|r| r.as_str()).collect(),
+            )
+            .unwrap(),
         };
         links[pos] = merged;
         (links, true)
@@ -282,15 +285,12 @@ pub fn handle_unlink(args: &UnlinkArgs, notes_dir: &Path) -> Result<()> {
             print_ambiguous_notes(&args.target, &notes);
             bail!("ambiguous target note identifier");
         }
-        ResolveResult::NotFound => args
-            .target
-            .parse::<NoteId>()
-            .map_err(|_| {
-                anyhow::anyhow!(
-                    "target note not found and not a valid note ID: '{}'",
-                    args.target
-                )
-            })?,
+        ResolveResult::NotFound => args.target.parse::<NoteId>().map_err(|_| {
+            anyhow::anyhow!(
+                "target note not found and not a valid note ID: '{}'",
+                args.target
+            )
+        })?,
     };
 
     // 4. Read source file
@@ -398,9 +398,7 @@ mod remove_link_tests {
     use super::*;
 
     fn test_note_id(suffix: &str) -> NoteId {
-        format!("01HQ3K5M7NXJK4QZPW{}", suffix)
-            .parse()
-            .unwrap()
+        format!("01HQ3K5M7NXJK4QZPW{}", suffix).parse().unwrap()
     }
 
     #[test]

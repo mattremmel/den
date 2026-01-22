@@ -1799,7 +1799,11 @@ fn all_rels_counts_multiple_links_per_rel() {
         .build()
         .unwrap();
     index
-        .upsert_note(&note2, &test_content_hash(), &PathBuf::from("notes/other.md"))
+        .upsert_note(
+            &note2,
+            &test_content_hash(),
+            &PathBuf::from("notes/other.md"),
+        )
         .unwrap();
 
     let result = index.all_rels().unwrap();
