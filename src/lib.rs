@@ -31,7 +31,7 @@ pub fn run() -> Result<()> {
         Command::Search(args) => handle_search(args, &notes_dir),
         Command::New(args) => handle_new(args, &notes_dir, &config),
         Command::Show(args) => handle_show(args, &notes_dir),
-        Command::Edit(args) => handle_edit(args),
+        Command::Edit(args) => handle_edit(args, &notes_dir, &config),
         Command::Topics(args) => handle_topics(args),
         Command::Tags(args) => handle_tags(args),
         Command::Tag(args) => handle_tag(args),

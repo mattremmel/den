@@ -615,9 +615,64 @@ pub fn handle_show(args: &ShowArgs, notes_dir: &Path) -> Result<()> {
     }
 }
 
-pub fn handle_edit(_args: &EditArgs) -> Result<()> {
-    println!("edit: not yet implemented");
-    Ok(())
+/// Trait for launching an editor (allows mocking in tests).
+trait EditorLauncher {
+    fn open(&self, path: &Path) -> Result<()>;
+}
+
+/// Internal implementation that accepts a generic editor launcher.
+fn handle_edit_impl<E: EditorLauncher>(
+    args: &EditArgs,
+    notes_dir: &Path,
+    editor: &E,
+) -> Result<()> {
+    let db_path = index_db_path(notes_dir);
+    let index = SqliteIndex::open(&db_path)
+        .with_context(|| format!("failed to open index at {}", db_path.display()))?;
+
+    match resolve_note(&index, &args.note)? {
+        ResolveResult::Unique(note) => {
+            let file_path = notes_dir.join(note.path());
+
+            editor.open(&file_path)?;
+            update_modified_timestamp(&file_path)?;
+
+            // Update index
+            if let Ok(mut idx) = SqliteIndex::open(&db_path) {
+                let builder = IndexBuilder::new(notes_dir.to_path_buf());
+                let _ = builder.incremental_update(&mut idx);
+            }
+
+            println!("Edited: {} [{}]", note.title(), note.id().prefix());
+            Ok(())
+        }
+        ResolveResult::Ambiguous(notes) => {
+            eprintln!(
+                "Ambiguous: '{}' matches {} notes:",
+                args.note,
+                notes.len()
+            );
+            for n in &notes {
+                eprintln!("  {} - {}", &n.id().to_string()[..8], n.title());
+            }
+            eprintln!();
+            eprintln!("Use the ID prefix to specify which note you mean.");
+            bail!("ambiguous note identifier");
+        }
+        ResolveResult::NotFound => {
+            bail!("note not found: '{}'", args.note);
+        }
+    }
+}
+
+pub fn handle_edit(args: &EditArgs, notes_dir: &Path, config: &Config) -> Result<()> {
+    struct RealEditor<'a>(&'a Config);
+    impl EditorLauncher for RealEditor<'_> {
+        fn open(&self, path: &Path) -> Result<()> {
+            open_in_editor(path, self.0)
+        }
+    }
+    handle_edit_impl(args, notes_dir, &RealEditor(config))
 }
 
 pub fn handle_topics(_args: &TopicsArgs) -> Result<()> {
@@ -1548,6 +1603,285 @@ This is the body of the note.
             assert!(result.is_err());
             let err = result.unwrap_err().to_string();
             assert!(err.contains("not found"));
+        }
+    }
+
+    // ===========================================
+    // handle_edit tests
+    // ===========================================
+
+    mod handle_edit_tests {
+        use super::*;
+        use crate::index::{IndexBuilder, SqliteIndex};
+        use std::cell::RefCell;
+        use tempfile::TempDir;
+
+        /// Mock editor for testing.
+        struct MockEditor {
+            opened: RefCell<Option<PathBuf>>,
+            should_fail: bool,
+        }
+
+        impl MockEditor {
+            fn new() -> Self {
+                Self {
+                    opened: RefCell::new(None),
+                    should_fail: false,
+                }
+            }
+
+            fn failing() -> Self {
+                Self {
+                    opened: RefCell::new(None),
+                    should_fail: true,
+                }
+            }
+
+            fn opened_path(&self) -> Option<PathBuf> {
+                self.opened.borrow().clone()
+            }
+        }
+
+        impl EditorLauncher for MockEditor {
+            fn open(&self, path: &Path) -> Result<()> {
+                *self.opened.borrow_mut() = Some(path.to_path_buf());
+                if self.should_fail {
+                    bail!("editor failed to open");
+                }
+                Ok(())
+            }
+        }
+
+        fn setup_notes_dir() -> TempDir {
+            let dir = TempDir::new().unwrap();
+            std::fs::create_dir_all(dir.path().join(".index")).unwrap();
+
+            let note = r#"---
+id: 01HQ3K5M7NXJK4QZPW8V2R6T9A
+title: API Design
+created: 2024-01-15T10:30:00Z
+modified: 2024-01-15T10:30:00Z
+aliases:
+  - REST
+---
+Body content.
+"#;
+            std::fs::write(dir.path().join("01HQ3K5M7N-api-design.md"), note).unwrap();
+
+            // Build index
+            let db_path = dir.path().join(".index/notes.db");
+            let mut index = SqliteIndex::open(&db_path).unwrap();
+            IndexBuilder::new(dir.path().to_path_buf())
+                .full_rebuild(&mut index)
+                .unwrap();
+
+            dir
+        }
+
+        fn setup_notes_dir_with_ambiguous() -> TempDir {
+            let dir = TempDir::new().unwrap();
+            std::fs::create_dir_all(dir.path().join(".index")).unwrap();
+
+            // Note 1
+            let note1 = r#"---
+id: 01HQ3K5M7NXJK4QZPW8V2R6T9A
+title: API Design
+created: 2024-01-15T10:30:00Z
+modified: 2024-01-15T10:30:00Z
+---
+Note 1
+"#;
+            std::fs::write(dir.path().join("01HQ3K5M7N-api-design.md"), note1).unwrap();
+
+            // Note 2 with same title
+            let note2 = r#"---
+id: 01HQ3K5M7NXJK4QZPW8V2R6T9B
+title: API Design
+created: 2024-01-15T10:30:00Z
+modified: 2024-01-15T10:30:00Z
+---
+Note 2
+"#;
+            std::fs::write(dir.path().join("01HQ3K5M7N-api-design-2.md"), note2).unwrap();
+
+            // Build index
+            let db_path = dir.path().join(".index/notes.db");
+            let mut index = SqliteIndex::open(&db_path).unwrap();
+            IndexBuilder::new(dir.path().to_path_buf())
+                .full_rebuild(&mut index)
+                .unwrap();
+
+            dir
+        }
+
+        // Phase 1: Error cases
+
+        #[test]
+        fn handle_edit_not_found_returns_error() {
+            let dir = setup_notes_dir();
+            let args = EditArgs {
+                note: "nonexistent".to_string(),
+            };
+            let editor = MockEditor::new();
+
+            let result = handle_edit_impl(&args, dir.path(), &editor);
+            assert!(result.is_err());
+            assert!(result.unwrap_err().to_string().contains("not found"));
+        }
+
+        #[test]
+        fn handle_edit_ambiguous_returns_error() {
+            let dir = setup_notes_dir_with_ambiguous();
+            let args = EditArgs {
+                note: "API Design".to_string(),
+            };
+            let editor = MockEditor::new();
+
+            let result = handle_edit_impl(&args, dir.path(), &editor);
+            assert!(result.is_err());
+            assert!(result.unwrap_err().to_string().contains("ambiguous"));
+        }
+
+        // Phase 2: Resolution methods
+
+        #[test]
+        fn handle_edit_by_id_prefix() {
+            let dir = setup_notes_dir();
+            let args = EditArgs {
+                note: "01HQ3K5M".to_string(),
+            };
+            let editor = MockEditor::new();
+
+            let result = handle_edit_impl(&args, dir.path(), &editor);
+            assert!(result.is_ok());
+
+            let opened = editor.opened_path().unwrap();
+            assert!(opened.ends_with("01HQ3K5M7N-api-design.md"));
+        }
+
+        #[test]
+        fn handle_edit_by_title() {
+            let dir = setup_notes_dir();
+            let args = EditArgs {
+                note: "API Design".to_string(),
+            };
+            let editor = MockEditor::new();
+
+            let result = handle_edit_impl(&args, dir.path(), &editor);
+            assert!(result.is_ok());
+
+            let opened = editor.opened_path().unwrap();
+            assert!(opened.ends_with("01HQ3K5M7N-api-design.md"));
+        }
+
+        #[test]
+        fn handle_edit_by_alias() {
+            let dir = setup_notes_dir();
+            let args = EditArgs {
+                note: "REST".to_string(),
+            };
+            let editor = MockEditor::new();
+
+            let result = handle_edit_impl(&args, dir.path(), &editor);
+            assert!(result.is_ok());
+
+            let opened = editor.opened_path().unwrap();
+            assert!(opened.ends_with("01HQ3K5M7N-api-design.md"));
+        }
+
+        // Phase 3: Timestamp update
+
+        #[test]
+        fn handle_edit_updates_modified_timestamp() {
+            let dir = setup_notes_dir();
+            let args = EditArgs {
+                note: "API Design".to_string(),
+            };
+            let editor = MockEditor::new();
+
+            // Read original modified time
+            let file_path = dir.path().join("01HQ3K5M7N-api-design.md");
+            let before = crate::infra::read_note(&file_path).unwrap();
+            let original_modified = before.note.modified();
+
+            // Small delay to ensure timestamp differs
+            std::thread::sleep(std::time::Duration::from_millis(10));
+
+            let result = handle_edit_impl(&args, dir.path(), &editor);
+            assert!(result.is_ok());
+
+            // Read updated modified time
+            let after = crate::infra::read_note(&file_path).unwrap();
+            assert!(
+                after.note.modified() > original_modified,
+                "modified timestamp should be updated"
+            );
+        }
+
+        // Phase 4: Editor failure
+
+        #[test]
+        fn handle_edit_editor_failure_returns_error() {
+            let dir = setup_notes_dir();
+            let args = EditArgs {
+                note: "API Design".to_string(),
+            };
+            let editor = MockEditor::failing();
+
+            let result = handle_edit_impl(&args, dir.path(), &editor);
+            assert!(result.is_err());
+            assert!(result.unwrap_err().to_string().contains("editor failed"));
+        }
+
+        #[test]
+        fn handle_edit_no_timestamp_update_on_editor_failure() {
+            let dir = setup_notes_dir();
+            let args = EditArgs {
+                note: "API Design".to_string(),
+            };
+            let editor = MockEditor::failing();
+
+            // Read original modified time
+            let file_path = dir.path().join("01HQ3K5M7N-api-design.md");
+            let before = crate::infra::read_note(&file_path).unwrap();
+            let original_modified = before.note.modified();
+
+            let _ = handle_edit_impl(&args, dir.path(), &editor);
+
+            // Read modified time after (should be unchanged)
+            let after = crate::infra::read_note(&file_path).unwrap();
+            assert_eq!(
+                after.note.modified(),
+                original_modified,
+                "modified timestamp should NOT be updated on editor failure"
+            );
+        }
+
+        // Phase 5: Index update
+
+        #[test]
+        fn handle_edit_updates_index() {
+            let dir = setup_notes_dir();
+            let args = EditArgs {
+                note: "API Design".to_string(),
+            };
+            let editor = MockEditor::new();
+
+            let result = handle_edit_impl(&args, dir.path(), &editor);
+            assert!(result.is_ok());
+
+            // Verify index was updated by checking modified time in index
+            let db_path = dir.path().join(".index/notes.db");
+            let index = SqliteIndex::open(&db_path).unwrap();
+            let notes = index
+                .find_by_title("API Design")
+                .unwrap();
+            assert_eq!(notes.len(), 1);
+
+            // The index should reflect the updated modified timestamp
+            let file_path = dir.path().join("01HQ3K5M7N-api-design.md");
+            let file_note = crate::infra::read_note(&file_path).unwrap();
+            assert_eq!(notes[0].modified(), file_note.note.modified());
         }
     }
 }
