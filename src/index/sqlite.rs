@@ -176,9 +176,9 @@ impl IndexRepository for SqliteIndex {
             };
 
         // Parse values
-        let note_id: NoteId = id_str.parse().map_err(|e| {
-            IndexError::InvalidQuery(format!("invalid note ID in database: {}", e))
-        })?;
+        let note_id: NoteId = id_str
+            .parse()
+            .map_err(|e| IndexError::InvalidQuery(format!("invalid note ID in database: {}", e)))?;
 
         let created = DateTime::parse_from_rfc3339(&created_str)
             .map_err(|e| IndexError::InvalidQuery(format!("invalid created timestamp: {}", e)))?
@@ -212,7 +212,8 @@ impl IndexRepository for SqliteIndex {
             .collect();
 
         // Build IndexedNote
-        let mut builder = IndexedNote::builder(note_id, title, created, modified, path, content_hash);
+        let mut builder =
+            IndexedNote::builder(note_id, title, created, modified, path, content_hash);
 
         if let Some(desc) = description {
             builder = builder.description(desc);
@@ -304,10 +305,48 @@ impl IndexRepository for SqliteIndex {
 
     fn list_by_topic(
         &self,
-        _topic: &Topic,
-        _include_descendants: bool,
+        topic: &Topic,
+        include_descendants: bool,
     ) -> IndexResult<Vec<IndexedNote>> {
-        todo!("list_by_topic not yet implemented")
+        let topic_path = topic.to_string();
+
+        let query = if include_descendants {
+            "SELECT DISTINCT n.id FROM notes n
+             JOIN note_topics nt ON n.id = nt.note_id
+             JOIN topics t ON nt.topic_id = t.id
+             WHERE t.path = ?1 OR t.path LIKE ?2"
+        } else {
+            "SELECT DISTINCT n.id FROM notes n
+             JOIN note_topics nt ON n.id = nt.note_id
+             JOIN topics t ON nt.topic_id = t.id
+             WHERE t.path = ?1"
+        };
+
+        let mut stmt = self.conn.prepare(query)?;
+
+        let note_ids: Vec<NoteId> = if include_descendants {
+            let pattern = format!("{}/%", topic_path);
+            stmt.query_map(rusqlite::params![&topic_path, &pattern], |row| {
+                row.get::<_, String>(0)
+            })?
+            .filter_map(|r| r.ok())
+            .filter_map(|id_str| id_str.parse().ok())
+            .collect()
+        } else {
+            stmt.query_map([&topic_path], |row| row.get::<_, String>(0))?
+                .filter_map(|r| r.ok())
+                .filter_map(|id_str| id_str.parse().ok())
+                .collect()
+        };
+
+        let mut notes = Vec::with_capacity(note_ids.len());
+        for id in note_ids {
+            if let Some(note) = self.get_note(&id)? {
+                notes.push(note);
+            }
+        }
+
+        Ok(notes)
     }
 
     fn list_by_tag(&self, _tag: &Tag) -> IndexResult<Vec<IndexedNote>> {
@@ -693,8 +732,13 @@ mod tests {
     #[test]
     fn test_remove_note_existing_deletes_row() {
         let mut index = SqliteIndex::open_in_memory().unwrap();
-        let note =
-            Note::new(test_note_id(), "Test Note", test_datetime(), test_datetime()).unwrap();
+        let note = Note::new(
+            test_note_id(),
+            "Test Note",
+            test_datetime(),
+            test_datetime(),
+        )
+        .unwrap();
         let hash = test_content_hash();
         let path = test_path();
 
@@ -797,14 +841,22 @@ mod tests {
     fn test_get_note_nonexistent_returns_none() {
         let index = SqliteIndex::open_in_memory().unwrap();
         let result = index.get_note(&test_note_id()).unwrap();
-        assert!(result.is_none(), "get_note should return None for non-existent note");
+        assert!(
+            result.is_none(),
+            "get_note should return None for non-existent note"
+        );
     }
 
     #[test]
     fn test_get_note_existing_returns_basic_fields() {
         let mut index = SqliteIndex::open_in_memory().unwrap();
-        let note =
-            Note::new(test_note_id(), "Test Note", test_datetime(), later_datetime()).unwrap();
+        let note = Note::new(
+            test_note_id(),
+            "Test Note",
+            test_datetime(),
+            later_datetime(),
+        )
+        .unwrap();
         let hash = test_content_hash();
         let path = test_path();
 
@@ -822,8 +874,13 @@ mod tests {
     #[test]
     fn test_get_note_null_description_returns_none() {
         let mut index = SqliteIndex::open_in_memory().unwrap();
-        let note =
-            Note::new(test_note_id(), "Test Note", test_datetime(), test_datetime()).unwrap();
+        let note = Note::new(
+            test_note_id(),
+            "Test Note",
+            test_datetime(),
+            test_datetime(),
+        )
+        .unwrap();
         let hash = test_content_hash();
         let path = test_path();
 
@@ -912,8 +969,13 @@ mod tests {
     #[test]
     fn test_get_note_empty_topics_and_tags() {
         let mut index = SqliteIndex::open_in_memory().unwrap();
-        let note =
-            Note::new(test_note_id(), "Test Note", test_datetime(), test_datetime()).unwrap();
+        let note = Note::new(
+            test_note_id(),
+            "Test Note",
+            test_datetime(),
+            test_datetime(),
+        )
+        .unwrap();
         let hash = test_content_hash();
         let path = test_path();
 
@@ -947,8 +1009,13 @@ mod tests {
     #[test]
     fn test_upsert_note_insert_basic_fields() {
         let mut index = SqliteIndex::open_in_memory().unwrap();
-        let note =
-            Note::new(test_note_id(), "Test Note", test_datetime(), test_datetime()).unwrap();
+        let note = Note::new(
+            test_note_id(),
+            "Test Note",
+            test_datetime(),
+            test_datetime(),
+        )
+        .unwrap();
         let hash = test_content_hash();
         let path = test_path();
 
@@ -965,8 +1032,13 @@ mod tests {
     #[test]
     fn test_upsert_note_stores_timestamps_rfc3339() {
         let mut index = SqliteIndex::open_in_memory().unwrap();
-        let note =
-            Note::new(test_note_id(), "Test Note", test_datetime(), later_datetime()).unwrap();
+        let note = Note::new(
+            test_note_id(),
+            "Test Note",
+            test_datetime(),
+            later_datetime(),
+        )
+        .unwrap();
         let hash = test_content_hash();
         let path = test_path();
 
@@ -989,8 +1061,13 @@ mod tests {
     #[test]
     fn test_upsert_note_stores_content_hash() {
         let mut index = SqliteIndex::open_in_memory().unwrap();
-        let note =
-            Note::new(test_note_id(), "Test Note", test_datetime(), test_datetime()).unwrap();
+        let note = Note::new(
+            test_note_id(),
+            "Test Note",
+            test_datetime(),
+            test_datetime(),
+        )
+        .unwrap();
         let hash = test_content_hash();
         let path = test_path();
 
@@ -1114,9 +1191,11 @@ mod tests {
 
         let tag_count: i64 = index
             .conn()
-            .query_row("SELECT COUNT(*) FROM tags WHERE name = ?", ["draft"], |row| {
-                row.get(0)
-            })
+            .query_row(
+                "SELECT COUNT(*) FROM tags WHERE name = ?",
+                ["draft"],
+                |row| row.get(0),
+            )
             .unwrap();
 
         assert_eq!(tag_count, 1, "tag should be created");
@@ -1153,31 +1232,25 @@ mod tests {
         let topic = Topic::new("software").unwrap();
 
         // Insert first note with topic
-        let note1 = Note::builder(
-            test_note_id(),
-            "Note 1",
-            test_datetime(),
-            test_datetime(),
-        )
-        .topics(vec![topic.clone()])
-        .build()
-        .unwrap();
+        let note1 = Note::builder(test_note_id(), "Note 1", test_datetime(), test_datetime())
+            .topics(vec![topic.clone()])
+            .build()
+            .unwrap();
         index
             .upsert_note(&note1, &test_content_hash(), &test_path())
             .unwrap();
 
         // Insert second note with same topic
-        let note2 = Note::builder(
-            other_note_id(),
-            "Note 2",
-            test_datetime(),
-            test_datetime(),
-        )
-        .topics(vec![topic])
-        .build()
-        .unwrap();
+        let note2 = Note::builder(other_note_id(), "Note 2", test_datetime(), test_datetime())
+            .topics(vec![topic])
+            .build()
+            .unwrap();
         index
-            .upsert_note(&note2, &test_content_hash(), &std::path::PathBuf::from("other.md"))
+            .upsert_note(
+                &note2,
+                &test_content_hash(),
+                &std::path::PathBuf::from("other.md"),
+            )
             .unwrap();
 
         // Should only have one topic row
@@ -1242,15 +1315,25 @@ mod tests {
         let mut index = SqliteIndex::open_in_memory().unwrap();
 
         // Insert initial note
-        let note1 =
-            Note::new(test_note_id(), "Original Title", test_datetime(), test_datetime()).unwrap();
+        let note1 = Note::new(
+            test_note_id(),
+            "Original Title",
+            test_datetime(),
+            test_datetime(),
+        )
+        .unwrap();
         index
             .upsert_note(&note1, &test_content_hash(), &test_path())
             .unwrap();
 
         // Update the note
-        let note2 =
-            Note::new(test_note_id(), "Updated Title", test_datetime(), later_datetime()).unwrap();
+        let note2 = Note::new(
+            test_note_id(),
+            "Updated Title",
+            test_datetime(),
+            later_datetime(),
+        )
+        .unwrap();
         let new_hash = ContentHash::compute(b"new content");
         index.upsert_note(&note2, &new_hash, &test_path()).unwrap();
 
@@ -1343,16 +1426,29 @@ mod tests {
         let original_created = test_datetime();
 
         // Insert initial note
-        let note1 =
-            Note::new(test_note_id(), "Test Note", original_created, original_created).unwrap();
+        let note1 = Note::new(
+            test_note_id(),
+            "Test Note",
+            original_created,
+            original_created,
+        )
+        .unwrap();
         index
             .upsert_note(&note1, &test_content_hash(), &test_path())
             .unwrap();
 
         // Update the note with a different created timestamp (shouldn't change stored created)
         let new_created = later_datetime();
-        let note2 = Note::new(test_note_id(), "Updated Note", new_created, later_datetime()).unwrap();
-        index.upsert_note(&note2, &test_content_hash(), &test_path()).unwrap();
+        let note2 = Note::new(
+            test_note_id(),
+            "Updated Note",
+            new_created,
+            later_datetime(),
+        )
+        .unwrap();
+        index
+            .upsert_note(&note2, &test_content_hash(), &test_path())
+            .unwrap();
 
         // Verify created timestamp is preserved from first insert
         let retrieved = index.get_note(&test_note_id()).unwrap().unwrap();
@@ -1382,7 +1478,10 @@ mod tests {
             Topic::new("software").unwrap(),
             Topic::new("software/rust").unwrap(),
         ])
-        .tags(vec![Tag::new("draft").unwrap(), Tag::new("review").unwrap()])
+        .tags(vec![
+            Tag::new("draft").unwrap(),
+            Tag::new("review").unwrap(),
+        ])
         .aliases(vec!["alias1".to_string(), "alias2".to_string()])
         .build()
         .unwrap();
@@ -1408,8 +1507,13 @@ mod tests {
     fn test_upsert_remove_get_returns_none() {
         let mut index = SqliteIndex::open_in_memory().unwrap();
 
-        let note =
-            Note::new(test_note_id(), "Test Note", test_datetime(), test_datetime()).unwrap();
+        let note = Note::new(
+            test_note_id(),
+            "Test Note",
+            test_datetime(),
+            test_datetime(),
+        )
+        .unwrap();
         let hash = test_content_hash();
         let path = test_path();
 
@@ -1435,31 +1539,25 @@ mod tests {
         let shared_topic = Topic::new("shared").unwrap();
 
         // Insert first note
-        let note1 = Note::builder(
-            test_note_id(),
-            "Note 1",
-            test_datetime(),
-            test_datetime(),
-        )
-        .topics(vec![shared_topic.clone()])
-        .build()
-        .unwrap();
+        let note1 = Note::builder(test_note_id(), "Note 1", test_datetime(), test_datetime())
+            .topics(vec![shared_topic.clone()])
+            .build()
+            .unwrap();
         index
             .upsert_note(&note1, &test_content_hash(), &test_path())
             .unwrap();
 
         // Insert second note
-        let note2 = Note::builder(
-            other_note_id(),
-            "Note 2",
-            test_datetime(),
-            test_datetime(),
-        )
-        .topics(vec![shared_topic])
-        .build()
-        .unwrap();
+        let note2 = Note::builder(other_note_id(), "Note 2", test_datetime(), test_datetime())
+            .topics(vec![shared_topic])
+            .build()
+            .unwrap();
         index
-            .upsert_note(&note2, &test_content_hash(), &std::path::PathBuf::from("other.md"))
+            .upsert_note(
+                &note2,
+                &test_content_hash(),
+                &std::path::PathBuf::from("other.md"),
+            )
             .unwrap();
 
         // Only one topic row should exist
@@ -1515,5 +1613,252 @@ mod tests {
             )
             .unwrap();
         assert_eq!(desc_count, 1, "FTS should index description");
+    }
+
+    // ===========================================
+    // list_by_topic Tests
+    // ===========================================
+
+    #[test]
+    fn list_by_topic_returns_empty_when_no_matches() {
+        let index = SqliteIndex::open_in_memory().unwrap();
+        let topic = Topic::new("nonexistent").unwrap();
+
+        let result = index.list_by_topic(&topic, false).unwrap();
+
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn list_by_topic_exact_match_returns_matching_note() {
+        let mut index = SqliteIndex::open_in_memory().unwrap();
+        let topic = Topic::new("software/architecture").unwrap();
+
+        let note = Note::builder(
+            test_note_id(),
+            "Architecture Note",
+            test_datetime(),
+            test_datetime(),
+        )
+        .topics(vec![topic.clone()])
+        .build()
+        .unwrap();
+        index
+            .upsert_note(&note, &test_content_hash(), &test_path())
+            .unwrap();
+
+        let result = index.list_by_topic(&topic, false).unwrap();
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].id(), note.id());
+    }
+
+    #[test]
+    fn list_by_topic_exact_match_excludes_other_topics() {
+        let mut index = SqliteIndex::open_in_memory().unwrap();
+        let target = Topic::new("software").unwrap();
+        let other = Topic::new("personal").unwrap();
+
+        let note = Note::builder(
+            test_note_id(),
+            "Personal Note",
+            test_datetime(),
+            test_datetime(),
+        )
+        .topics(vec![other])
+        .build()
+        .unwrap();
+        index
+            .upsert_note(&note, &test_content_hash(), &test_path())
+            .unwrap();
+
+        let result = index.list_by_topic(&target, false).unwrap();
+
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn list_by_topic_exact_match_excludes_descendants() {
+        let mut index = SqliteIndex::open_in_memory().unwrap();
+        let parent = Topic::new("software").unwrap();
+        let child = Topic::new("software/architecture").unwrap();
+
+        let note = Note::builder(
+            test_note_id(),
+            "Architecture Note",
+            test_datetime(),
+            test_datetime(),
+        )
+        .topics(vec![child])
+        .build()
+        .unwrap();
+        index
+            .upsert_note(&note, &test_content_hash(), &test_path())
+            .unwrap();
+
+        let result = index.list_by_topic(&parent, false).unwrap();
+
+        assert!(
+            result.is_empty(),
+            "exact match should not include descendants"
+        );
+    }
+
+    #[test]
+    fn list_by_topic_with_descendants_includes_children() {
+        let mut index = SqliteIndex::open_in_memory().unwrap();
+        let parent = Topic::new("software").unwrap();
+        let child = Topic::new("software/architecture").unwrap();
+
+        let note = Note::builder(
+            test_note_id(),
+            "Architecture Note",
+            test_datetime(),
+            test_datetime(),
+        )
+        .topics(vec![child])
+        .build()
+        .unwrap();
+        index
+            .upsert_note(&note, &test_content_hash(), &test_path())
+            .unwrap();
+
+        let result = index.list_by_topic(&parent, true).unwrap();
+
+        assert_eq!(result.len(), 1);
+    }
+
+    #[test]
+    fn list_by_topic_with_descendants_includes_deeply_nested() {
+        let mut index = SqliteIndex::open_in_memory().unwrap();
+        let root = Topic::new("software").unwrap();
+        let deep = Topic::new("software/architecture/patterns/creational").unwrap();
+
+        let note = Note::builder(
+            test_note_id(),
+            "Deep Note",
+            test_datetime(),
+            test_datetime(),
+        )
+        .topics(vec![deep])
+        .build()
+        .unwrap();
+        index
+            .upsert_note(&note, &test_content_hash(), &test_path())
+            .unwrap();
+
+        let result = index.list_by_topic(&root, true).unwrap();
+
+        assert_eq!(result.len(), 1);
+    }
+
+    #[test]
+    fn list_by_topic_with_descendants_includes_exact_match() {
+        let mut index = SqliteIndex::open_in_memory().unwrap();
+        let topic = Topic::new("software").unwrap();
+
+        let note = Note::builder(
+            test_note_id(),
+            "Software Note",
+            test_datetime(),
+            test_datetime(),
+        )
+        .topics(vec![topic.clone()])
+        .build()
+        .unwrap();
+        index
+            .upsert_note(&note, &test_content_hash(), &test_path())
+            .unwrap();
+
+        let result = index.list_by_topic(&topic, true).unwrap();
+
+        assert_eq!(result.len(), 1);
+    }
+
+    #[test]
+    fn list_by_topic_returns_multiple_notes() {
+        let mut index = SqliteIndex::open_in_memory().unwrap();
+        let topic = Topic::new("software").unwrap();
+
+        let note1 = Note::builder(test_note_id(), "Note 1", test_datetime(), test_datetime())
+            .topics(vec![topic.clone()])
+            .build()
+            .unwrap();
+        index
+            .upsert_note(&note1, &test_content_hash(), &test_path())
+            .unwrap();
+
+        let note2 = Note::builder(other_note_id(), "Note 2", test_datetime(), test_datetime())
+            .topics(vec![topic.clone()])
+            .build()
+            .unwrap();
+        index
+            .upsert_note(
+                &note2,
+                &test_content_hash(),
+                &PathBuf::from("notes/other.md"),
+            )
+            .unwrap();
+
+        let result = index.list_by_topic(&topic, false).unwrap();
+
+        assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn list_by_topic_returns_note_once_even_with_multiple_matching_topics() {
+        let mut index = SqliteIndex::open_in_memory().unwrap();
+        let parent = Topic::new("software").unwrap();
+        let child1 = Topic::new("software/architecture").unwrap();
+        let child2 = Topic::new("software/design").unwrap();
+
+        let note = Note::builder(
+            test_note_id(),
+            "Multi-topic Note",
+            test_datetime(),
+            test_datetime(),
+        )
+        .topics(vec![child1, child2])
+        .build()
+        .unwrap();
+        index
+            .upsert_note(&note, &test_content_hash(), &test_path())
+            .unwrap();
+
+        let result = index.list_by_topic(&parent, true).unwrap();
+
+        assert_eq!(result.len(), 1, "note should appear exactly once");
+    }
+
+    #[test]
+    fn list_by_topic_returns_complete_indexed_note() {
+        let mut index = SqliteIndex::open_in_memory().unwrap();
+        let topic = Topic::new("software").unwrap();
+        let tag = Tag::new("important").unwrap();
+
+        let note = Note::builder(
+            test_note_id(),
+            "Complete Note",
+            test_datetime(),
+            test_datetime(),
+        )
+        .description(Some("A description"))
+        .topics(vec![topic.clone()])
+        .tags(vec![tag.clone()])
+        .build()
+        .unwrap();
+        let hash = test_content_hash();
+        let path = test_path();
+        index.upsert_note(&note, &hash, &path).unwrap();
+
+        let result = index.list_by_topic(&topic, false).unwrap();
+
+        assert_eq!(result.len(), 1);
+        let indexed = &result[0];
+        assert_eq!(indexed.title(), "Complete Note");
+        assert_eq!(indexed.description(), Some("A description"));
+        assert_eq!(indexed.topics(), &[topic]);
+        assert_eq!(indexed.tags(), &[tag]);
+        assert_eq!(indexed.content_hash(), &hash);
     }
 }
