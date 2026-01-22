@@ -520,6 +520,24 @@ impl IndexRepository for SqliteIndex {
             Err(e) => Err(IndexError::Database(e)),
         }
     }
+
+    fn list_all(&self) -> IndexResult<Vec<IndexedNote>> {
+        let mut stmt = self.conn.prepare("SELECT id FROM notes")?;
+        let note_ids: Vec<NoteId> = stmt
+            .query_map([], |row| row.get::<_, String>(0))?
+            .filter_map(|r| r.ok())
+            .filter_map(|id_str| id_str.parse().ok())
+            .collect();
+
+        let mut notes = Vec::with_capacity(note_ids.len());
+        for id in note_ids {
+            if let Some(note) = self.get_note(&id)? {
+                notes.push(note);
+            }
+        }
+
+        Ok(notes)
+    }
 }
 
 // ===========================================

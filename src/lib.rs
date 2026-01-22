@@ -27,7 +27,7 @@ pub fn run() -> Result<()> {
 
     match &cli.command {
         Command::Index(args) => handle_index(args, &notes_dir, verbose),
-        Command::List(args) => handle_list(args),
+        Command::List(args) => handle_list(args, &notes_dir),
         Command::Search(args) => handle_search(args),
         Command::New(args) => handle_new(args),
         Command::Show(args) => handle_show(args),

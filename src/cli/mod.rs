@@ -1,6 +1,7 @@
 //! CLI command definitions and handlers
 
 pub mod config;
+pub mod date_filter;
 pub mod handlers;
 pub mod output;
 

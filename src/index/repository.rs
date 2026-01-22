@@ -367,6 +367,9 @@ pub trait IndexRepository {
 
     /// Gets content hash for incremental indexing.
     fn get_content_hash(&self, path: &Path) -> IndexResult<Option<ContentHash>>;
+
+    /// Lists all notes in the index.
+    fn list_all(&self) -> IndexResult<Vec<IndexedNote>>;
 }
 
 #[cfg(test)]
