@@ -1,9 +1,12 @@
 //! SQLite-backed notes index implementation.
 
-use crate::index::{IndexError, IndexResult, create_schema};
+use crate::domain::{Note, NoteId, Tag, Topic};
+use crate::index::{IndexError, IndexRepository, IndexResult, IndexedNote, create_schema};
+use crate::infra::ContentHash;
+use chrono::{DateTime, Utc};
 use rusqlite::{Connection, Params};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 // ===========================================
 // SqliteIndex Struct
@@ -132,6 +135,199 @@ impl Drop for Transaction<'_> {
             // Attempt rollback, but ignore errors since we're in drop
             let _ = self.conn.execute_batch("ROLLBACK");
         }
+    }
+}
+
+// ===========================================
+// IndexRepository Implementation
+// ===========================================
+
+impl IndexRepository for SqliteIndex {
+    fn remove_note(&mut self, id: &NoteId) -> IndexResult<()> {
+        self.conn
+            .execute("DELETE FROM notes WHERE id = ?", [id.to_string()])?;
+        Ok(())
+    }
+
+    fn get_note(&self, id: &NoteId) -> IndexResult<Option<IndexedNote>> {
+        // Query notes table
+        let mut stmt = self.conn.prepare(
+            "SELECT id, title, description, created, modified, path, content_hash
+             FROM notes WHERE id = ?",
+        )?;
+
+        let note_row = stmt.query_row([id.to_string()], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, String>(5)?,
+                row.get::<_, String>(6)?,
+            ))
+        });
+
+        let (id_str, title, description, created_str, modified_str, path_str, hash_str) =
+            match note_row {
+                Ok(row) => row,
+                Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(None),
+                Err(e) => return Err(IndexError::Database(e)),
+            };
+
+        // Parse values
+        let note_id: NoteId = id_str.parse().map_err(|e| {
+            IndexError::InvalidQuery(format!("invalid note ID in database: {}", e))
+        })?;
+
+        let created = DateTime::parse_from_rfc3339(&created_str)
+            .map_err(|e| IndexError::InvalidQuery(format!("invalid created timestamp: {}", e)))?
+            .with_timezone(&Utc);
+
+        let modified = DateTime::parse_from_rfc3339(&modified_str)
+            .map_err(|e| IndexError::InvalidQuery(format!("invalid modified timestamp: {}", e)))?
+            .with_timezone(&Utc);
+
+        let content_hash = ContentHash::from_hex(&hash_str)
+            .map_err(|e| IndexError::InvalidQuery(format!("invalid content hash: {}", e)))?;
+
+        let path = PathBuf::from(path_str);
+
+        // Query topics via JOIN
+        let topics: Vec<Topic> = self
+            .conn
+            .prepare("SELECT t.path FROM topics t JOIN note_topics nt ON t.id = nt.topic_id WHERE nt.note_id = ?")?
+            .query_map([id.to_string()], |row| row.get::<_, String>(0))?
+            .filter_map(|r| r.ok())
+            .filter_map(|path| Topic::new(&path).ok())
+            .collect();
+
+        // Query tags via JOIN
+        let tags: Vec<Tag> = self
+            .conn
+            .prepare("SELECT t.name FROM tags t JOIN note_tags nt ON t.id = nt.tag_id WHERE nt.note_id = ?")?
+            .query_map([id.to_string()], |row| row.get::<_, String>(0))?
+            .filter_map(|r| r.ok())
+            .filter_map(|name| Tag::new(&name).ok())
+            .collect();
+
+        // Build IndexedNote
+        let mut builder = IndexedNote::builder(note_id, title, created, modified, path, content_hash);
+
+        if let Some(desc) = description {
+            builder = builder.description(desc);
+        }
+
+        builder = builder.topics(topics).tags(tags);
+
+        Ok(Some(builder.build()))
+    }
+
+    fn upsert_note(
+        &mut self,
+        note: &Note,
+        content_hash: &ContentHash,
+        path: &Path,
+    ) -> IndexResult<()> {
+        let tx = self.transaction()?;
+
+        // 1. INSERT/UPDATE notes row
+        let id_str = note.id().to_string();
+        let path_str = path.to_string_lossy();
+        let created_str = note.created().to_rfc3339();
+        let modified_str = note.modified().to_rfc3339();
+        let hash_str = content_hash.as_str();
+        let aliases_text = note.aliases().join(" ");
+        let aliases_text_opt = if aliases_text.is_empty() {
+            None
+        } else {
+            Some(aliases_text.as_str())
+        };
+
+        tx.conn.execute(
+            "INSERT INTO notes (id, path, title, description, created, modified, content_hash, aliases_text)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             ON CONFLICT(id) DO UPDATE SET
+                 path = excluded.path,
+                 title = excluded.title,
+                 description = excluded.description,
+                 modified = excluded.modified,
+                 content_hash = excluded.content_hash,
+                 aliases_text = excluded.aliases_text",
+            rusqlite::params![
+                id_str,
+                path_str,
+                note.title(),
+                note.description(),
+                created_str,
+                modified_str,
+                hash_str,
+                aliases_text_opt,
+            ],
+        )?;
+
+        // 2. Delete existing junctions
+        tx.conn
+            .execute("DELETE FROM note_topics WHERE note_id = ?", [&id_str])?;
+        tx.conn
+            .execute("DELETE FROM note_tags WHERE note_id = ?", [&id_str])?;
+
+        // 3. Insert topics (OR IGNORE) and junctions
+        for topic in note.topics() {
+            let topic_path = topic.to_string();
+            tx.conn.execute(
+                "INSERT OR IGNORE INTO topics (path) VALUES (?)",
+                [&topic_path],
+            )?;
+            tx.conn.execute(
+                "INSERT INTO note_topics (note_id, topic_id)
+                 SELECT ?, id FROM topics WHERE path = ?",
+                [&id_str, &topic_path],
+            )?;
+        }
+
+        // 4. Insert tags (OR IGNORE) and junctions
+        for tag in note.tags() {
+            tx.conn.execute(
+                "INSERT OR IGNORE INTO tags (name) VALUES (?)",
+                [tag.as_str()],
+            )?;
+            tx.conn.execute(
+                "INSERT INTO note_tags (note_id, tag_id)
+                 SELECT ?, id FROM tags WHERE name = ?",
+                [&id_str, tag.as_str()],
+            )?;
+        }
+
+        tx.commit()
+    }
+
+    fn list_by_topic(
+        &self,
+        _topic: &Topic,
+        _include_descendants: bool,
+    ) -> IndexResult<Vec<IndexedNote>> {
+        todo!("list_by_topic not yet implemented")
+    }
+
+    fn list_by_tag(&self, _tag: &Tag) -> IndexResult<Vec<IndexedNote>> {
+        todo!("list_by_tag not yet implemented")
+    }
+
+    fn search(&self, _query: &str) -> IndexResult<Vec<crate::index::SearchResult>> {
+        todo!("search not yet implemented")
+    }
+
+    fn all_topics(&self) -> IndexResult<Vec<crate::index::TopicWithCount>> {
+        todo!("all_topics not yet implemented")
+    }
+
+    fn all_tags(&self) -> IndexResult<Vec<crate::index::TagWithCount>> {
+        todo!("all_tags not yet implemented")
+    }
+
+    fn get_content_hash(&self, _path: &Path) -> IndexResult<Option<ContentHash>> {
+        todo!("get_content_hash not yet implemented")
     }
 }
 
@@ -441,5 +637,883 @@ mod tests {
             .unwrap();
 
         assert_eq!(count, 0, "explicitly rolled back data should not persist");
+    }
+
+    // ===========================================
+    // IndexRepository Tests - Test Helpers
+    // ===========================================
+
+    use crate::domain::{Note, NoteId, Tag, Topic};
+    use crate::index::IndexRepository;
+    use crate::infra::ContentHash;
+    use chrono::{DateTime, Utc};
+
+    fn test_note_id() -> NoteId {
+        "01HQ3K5M7NXJK4QZPW8V2R6T9Y".parse().unwrap()
+    }
+
+    fn other_note_id() -> NoteId {
+        "01HQ4A2R9PXJK4QZPW8V2R6T9Z".parse().unwrap()
+    }
+
+    fn test_datetime() -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339("2024-01-15T10:30:00Z")
+            .unwrap()
+            .with_timezone(&Utc)
+    }
+
+    fn later_datetime() -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339("2024-01-16T14:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc)
+    }
+
+    fn test_content_hash() -> ContentHash {
+        ContentHash::compute(b"test content")
+    }
+
+    fn test_path() -> std::path::PathBuf {
+        std::path::PathBuf::from("notes/test.md")
+    }
+
+    // ===========================================
+    // Phase 1: remove_note Tests
+    // ===========================================
+
+    #[test]
+    fn test_remove_note_nonexistent_is_idempotent() {
+        let mut index = SqliteIndex::open_in_memory().unwrap();
+        let id = test_note_id();
+
+        // Removing a non-existent note should succeed (idempotent)
+        let result = index.remove_note(&id);
+        assert!(result.is_ok(), "remove_note should be idempotent");
+    }
+
+    #[test]
+    fn test_remove_note_existing_deletes_row() {
+        let mut index = SqliteIndex::open_in_memory().unwrap();
+        let note =
+            Note::new(test_note_id(), "Test Note", test_datetime(), test_datetime()).unwrap();
+        let hash = test_content_hash();
+        let path = test_path();
+
+        // Insert a note
+        index.upsert_note(&note, &hash, &path).unwrap();
+
+        // Verify it exists
+        let count_before: i64 = index
+            .conn()
+            .query_row("SELECT COUNT(*) FROM notes", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count_before, 1);
+
+        // Remove it
+        index.remove_note(note.id()).unwrap();
+
+        // Verify it's gone
+        let count_after: i64 = index
+            .conn()
+            .query_row("SELECT COUNT(*) FROM notes", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count_after, 0, "note should be deleted");
+    }
+
+    #[test]
+    fn test_remove_note_cascades_to_note_topics() {
+        let mut index = SqliteIndex::open_in_memory().unwrap();
+        let note = Note::builder(
+            test_note_id(),
+            "Test Note",
+            test_datetime(),
+            test_datetime(),
+        )
+        .topics(vec![Topic::new("software").unwrap()])
+        .build()
+        .unwrap();
+        let hash = test_content_hash();
+        let path = test_path();
+
+        index.upsert_note(&note, &hash, &path).unwrap();
+
+        // Verify junction exists
+        let junction_count_before: i64 = index
+            .conn()
+            .query_row("SELECT COUNT(*) FROM note_topics", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(junction_count_before, 1);
+
+        // Remove note
+        index.remove_note(note.id()).unwrap();
+
+        // Verify junction is cascaded
+        let junction_count_after: i64 = index
+            .conn()
+            .query_row("SELECT COUNT(*) FROM note_topics", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(junction_count_after, 0, "note_topics should cascade delete");
+    }
+
+    #[test]
+    fn test_remove_note_cascades_to_note_tags() {
+        let mut index = SqliteIndex::open_in_memory().unwrap();
+        let note = Note::builder(
+            test_note_id(),
+            "Test Note",
+            test_datetime(),
+            test_datetime(),
+        )
+        .tags(vec![Tag::new("draft").unwrap()])
+        .build()
+        .unwrap();
+        let hash = test_content_hash();
+        let path = test_path();
+
+        index.upsert_note(&note, &hash, &path).unwrap();
+
+        // Verify junction exists
+        let junction_count_before: i64 = index
+            .conn()
+            .query_row("SELECT COUNT(*) FROM note_tags", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(junction_count_before, 1);
+
+        // Remove note
+        index.remove_note(note.id()).unwrap();
+
+        // Verify junction is cascaded
+        let junction_count_after: i64 = index
+            .conn()
+            .query_row("SELECT COUNT(*) FROM note_tags", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(junction_count_after, 0, "note_tags should cascade delete");
+    }
+
+    // ===========================================
+    // Phase 2: get_note Tests
+    // ===========================================
+
+    #[test]
+    fn test_get_note_nonexistent_returns_none() {
+        let index = SqliteIndex::open_in_memory().unwrap();
+        let result = index.get_note(&test_note_id()).unwrap();
+        assert!(result.is_none(), "get_note should return None for non-existent note");
+    }
+
+    #[test]
+    fn test_get_note_existing_returns_basic_fields() {
+        let mut index = SqliteIndex::open_in_memory().unwrap();
+        let note =
+            Note::new(test_note_id(), "Test Note", test_datetime(), later_datetime()).unwrap();
+        let hash = test_content_hash();
+        let path = test_path();
+
+        index.upsert_note(&note, &hash, &path).unwrap();
+
+        let retrieved = index.get_note(note.id()).unwrap().unwrap();
+        assert_eq!(retrieved.id(), note.id());
+        assert_eq!(retrieved.title(), note.title());
+        assert_eq!(retrieved.created(), note.created());
+        assert_eq!(retrieved.modified(), note.modified());
+        assert_eq!(retrieved.path(), path.as_path());
+        assert_eq!(retrieved.content_hash(), &hash);
+    }
+
+    #[test]
+    fn test_get_note_null_description_returns_none() {
+        let mut index = SqliteIndex::open_in_memory().unwrap();
+        let note =
+            Note::new(test_note_id(), "Test Note", test_datetime(), test_datetime()).unwrap();
+        let hash = test_content_hash();
+        let path = test_path();
+
+        index.upsert_note(&note, &hash, &path).unwrap();
+
+        let retrieved = index.get_note(note.id()).unwrap().unwrap();
+        assert_eq!(retrieved.description(), None, "description should be None");
+    }
+
+    #[test]
+    fn test_get_note_with_description() {
+        let mut index = SqliteIndex::open_in_memory().unwrap();
+        let note = Note::builder(
+            test_note_id(),
+            "Test Note",
+            test_datetime(),
+            test_datetime(),
+        )
+        .description(Some("A test description"))
+        .build()
+        .unwrap();
+        let hash = test_content_hash();
+        let path = test_path();
+
+        index.upsert_note(&note, &hash, &path).unwrap();
+
+        let retrieved = index.get_note(note.id()).unwrap().unwrap();
+        assert_eq!(
+            retrieved.description(),
+            Some("A test description"),
+            "description should be retrieved"
+        );
+    }
+
+    #[test]
+    fn test_get_note_loads_topics() {
+        let mut index = SqliteIndex::open_in_memory().unwrap();
+        let topics = vec![
+            Topic::new("software").unwrap(),
+            Topic::new("software/rust").unwrap(),
+        ];
+        let note = Note::builder(
+            test_note_id(),
+            "Test Note",
+            test_datetime(),
+            test_datetime(),
+        )
+        .topics(topics.clone())
+        .build()
+        .unwrap();
+        let hash = test_content_hash();
+        let path = test_path();
+
+        index.upsert_note(&note, &hash, &path).unwrap();
+
+        let retrieved = index.get_note(note.id()).unwrap().unwrap();
+        assert_eq!(retrieved.topics().len(), 2);
+        assert!(retrieved.topics().contains(&topics[0]));
+        assert!(retrieved.topics().contains(&topics[1]));
+    }
+
+    #[test]
+    fn test_get_note_loads_tags() {
+        let mut index = SqliteIndex::open_in_memory().unwrap();
+        let tags = vec![Tag::new("draft").unwrap(), Tag::new("important").unwrap()];
+        let note = Note::builder(
+            test_note_id(),
+            "Test Note",
+            test_datetime(),
+            test_datetime(),
+        )
+        .tags(tags.clone())
+        .build()
+        .unwrap();
+        let hash = test_content_hash();
+        let path = test_path();
+
+        index.upsert_note(&note, &hash, &path).unwrap();
+
+        let retrieved = index.get_note(note.id()).unwrap().unwrap();
+        assert_eq!(retrieved.tags().len(), 2);
+        assert!(retrieved.tags().contains(&tags[0]));
+        assert!(retrieved.tags().contains(&tags[1]));
+    }
+
+    #[test]
+    fn test_get_note_empty_topics_and_tags() {
+        let mut index = SqliteIndex::open_in_memory().unwrap();
+        let note =
+            Note::new(test_note_id(), "Test Note", test_datetime(), test_datetime()).unwrap();
+        let hash = test_content_hash();
+        let path = test_path();
+
+        index.upsert_note(&note, &hash, &path).unwrap();
+
+        let retrieved = index.get_note(note.id()).unwrap().unwrap();
+        assert!(retrieved.topics().is_empty(), "topics should be empty");
+        assert!(retrieved.tags().is_empty(), "tags should be empty");
+    }
+
+    #[test]
+    fn test_get_note_parses_datetime() {
+        let mut index = SqliteIndex::open_in_memory().unwrap();
+        let created = test_datetime();
+        let modified = later_datetime();
+        let note = Note::new(test_note_id(), "Test Note", created, modified).unwrap();
+        let hash = test_content_hash();
+        let path = test_path();
+
+        index.upsert_note(&note, &hash, &path).unwrap();
+
+        let retrieved = index.get_note(note.id()).unwrap().unwrap();
+        assert_eq!(retrieved.created(), created, "created should match");
+        assert_eq!(retrieved.modified(), modified, "modified should match");
+    }
+
+    // ===========================================
+    // Phase 3: upsert_note - Insert Path Tests
+    // ===========================================
+
+    #[test]
+    fn test_upsert_note_insert_basic_fields() {
+        let mut index = SqliteIndex::open_in_memory().unwrap();
+        let note =
+            Note::new(test_note_id(), "Test Note", test_datetime(), test_datetime()).unwrap();
+        let hash = test_content_hash();
+        let path = test_path();
+
+        let result = index.upsert_note(&note, &hash, &path);
+        assert!(result.is_ok(), "upsert should succeed");
+
+        let count: i64 = index
+            .conn()
+            .query_row("SELECT COUNT(*) FROM notes", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 1, "one note should be inserted");
+    }
+
+    #[test]
+    fn test_upsert_note_stores_timestamps_rfc3339() {
+        let mut index = SqliteIndex::open_in_memory().unwrap();
+        let note =
+            Note::new(test_note_id(), "Test Note", test_datetime(), later_datetime()).unwrap();
+        let hash = test_content_hash();
+        let path = test_path();
+
+        index.upsert_note(&note, &hash, &path).unwrap();
+
+        let (created, modified): (String, String) = index
+            .conn()
+            .query_row(
+                "SELECT created, modified FROM notes WHERE id = ?",
+                [test_note_id().to_string()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+
+        // Verify it's parseable as RFC3339
+        assert!(DateTime::parse_from_rfc3339(&created).is_ok());
+        assert!(DateTime::parse_from_rfc3339(&modified).is_ok());
+    }
+
+    #[test]
+    fn test_upsert_note_stores_content_hash() {
+        let mut index = SqliteIndex::open_in_memory().unwrap();
+        let note =
+            Note::new(test_note_id(), "Test Note", test_datetime(), test_datetime()).unwrap();
+        let hash = test_content_hash();
+        let path = test_path();
+
+        index.upsert_note(&note, &hash, &path).unwrap();
+
+        let stored_hash: String = index
+            .conn()
+            .query_row(
+                "SELECT content_hash FROM notes WHERE id = ?",
+                [test_note_id().to_string()],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        assert_eq!(stored_hash, hash.as_str(), "content_hash should match");
+    }
+
+    #[test]
+    fn test_upsert_note_stores_aliases_text() {
+        let mut index = SqliteIndex::open_in_memory().unwrap();
+        let note = Note::builder(
+            test_note_id(),
+            "Test Note",
+            test_datetime(),
+            test_datetime(),
+        )
+        .aliases(vec!["alias1".to_string(), "alias2".to_string()])
+        .build()
+        .unwrap();
+        let hash = test_content_hash();
+        let path = test_path();
+
+        index.upsert_note(&note, &hash, &path).unwrap();
+
+        let aliases_text: Option<String> = index
+            .conn()
+            .query_row(
+                "SELECT aliases_text FROM notes WHERE id = ?",
+                [test_note_id().to_string()],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        assert_eq!(
+            aliases_text,
+            Some("alias1 alias2".to_string()),
+            "aliases_text should be space-separated"
+        );
+    }
+
+    #[test]
+    fn test_upsert_note_creates_new_topics() {
+        let mut index = SqliteIndex::open_in_memory().unwrap();
+        let note = Note::builder(
+            test_note_id(),
+            "Test Note",
+            test_datetime(),
+            test_datetime(),
+        )
+        .topics(vec![Topic::new("software/rust").unwrap()])
+        .build()
+        .unwrap();
+        let hash = test_content_hash();
+        let path = test_path();
+
+        index.upsert_note(&note, &hash, &path).unwrap();
+
+        let topic_count: i64 = index
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM topics WHERE path = ?",
+                ["software/rust"],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        assert_eq!(topic_count, 1, "topic should be created");
+    }
+
+    #[test]
+    fn test_upsert_note_creates_topic_junctions() {
+        let mut index = SqliteIndex::open_in_memory().unwrap();
+        let note = Note::builder(
+            test_note_id(),
+            "Test Note",
+            test_datetime(),
+            test_datetime(),
+        )
+        .topics(vec![Topic::new("software").unwrap()])
+        .build()
+        .unwrap();
+        let hash = test_content_hash();
+        let path = test_path();
+
+        index.upsert_note(&note, &hash, &path).unwrap();
+
+        let junction_count: i64 = index
+            .conn()
+            .query_row("SELECT COUNT(*) FROM note_topics", [], |row| row.get(0))
+            .unwrap();
+
+        assert_eq!(junction_count, 1, "topic junction should be created");
+    }
+
+    #[test]
+    fn test_upsert_note_creates_new_tags() {
+        let mut index = SqliteIndex::open_in_memory().unwrap();
+        let note = Note::builder(
+            test_note_id(),
+            "Test Note",
+            test_datetime(),
+            test_datetime(),
+        )
+        .tags(vec![Tag::new("draft").unwrap()])
+        .build()
+        .unwrap();
+        let hash = test_content_hash();
+        let path = test_path();
+
+        index.upsert_note(&note, &hash, &path).unwrap();
+
+        let tag_count: i64 = index
+            .conn()
+            .query_row("SELECT COUNT(*) FROM tags WHERE name = ?", ["draft"], |row| {
+                row.get(0)
+            })
+            .unwrap();
+
+        assert_eq!(tag_count, 1, "tag should be created");
+    }
+
+    #[test]
+    fn test_upsert_note_creates_tag_junctions() {
+        let mut index = SqliteIndex::open_in_memory().unwrap();
+        let note = Note::builder(
+            test_note_id(),
+            "Test Note",
+            test_datetime(),
+            test_datetime(),
+        )
+        .tags(vec![Tag::new("draft").unwrap()])
+        .build()
+        .unwrap();
+        let hash = test_content_hash();
+        let path = test_path();
+
+        index.upsert_note(&note, &hash, &path).unwrap();
+
+        let junction_count: i64 = index
+            .conn()
+            .query_row("SELECT COUNT(*) FROM note_tags", [], |row| row.get(0))
+            .unwrap();
+
+        assert_eq!(junction_count, 1, "tag junction should be created");
+    }
+
+    #[test]
+    fn test_upsert_note_reuses_existing_topics() {
+        let mut index = SqliteIndex::open_in_memory().unwrap();
+        let topic = Topic::new("software").unwrap();
+
+        // Insert first note with topic
+        let note1 = Note::builder(
+            test_note_id(),
+            "Note 1",
+            test_datetime(),
+            test_datetime(),
+        )
+        .topics(vec![topic.clone()])
+        .build()
+        .unwrap();
+        index
+            .upsert_note(&note1, &test_content_hash(), &test_path())
+            .unwrap();
+
+        // Insert second note with same topic
+        let note2 = Note::builder(
+            other_note_id(),
+            "Note 2",
+            test_datetime(),
+            test_datetime(),
+        )
+        .topics(vec![topic])
+        .build()
+        .unwrap();
+        index
+            .upsert_note(&note2, &test_content_hash(), &std::path::PathBuf::from("other.md"))
+            .unwrap();
+
+        // Should only have one topic row
+        let topic_count: i64 = index
+            .conn()
+            .query_row("SELECT COUNT(*) FROM topics", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(topic_count, 1, "should reuse existing topic");
+
+        // But two junctions
+        let junction_count: i64 = index
+            .conn()
+            .query_row("SELECT COUNT(*) FROM note_topics", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(junction_count, 2, "should have two junctions");
+    }
+
+    #[test]
+    fn test_upsert_note_is_atomic() {
+        let mut index = SqliteIndex::open_in_memory().unwrap();
+        let note = Note::builder(
+            test_note_id(),
+            "Test Note",
+            test_datetime(),
+            test_datetime(),
+        )
+        .topics(vec![Topic::new("software").unwrap()])
+        .tags(vec![Tag::new("draft").unwrap()])
+        .build()
+        .unwrap();
+        let hash = test_content_hash();
+        let path = test_path();
+
+        // The upsert should be atomic - all or nothing
+        index.upsert_note(&note, &hash, &path).unwrap();
+
+        // Verify all parts were inserted
+        let note_count: i64 = index
+            .conn()
+            .query_row("SELECT COUNT(*) FROM notes", [], |row| row.get(0))
+            .unwrap();
+        let topic_count: i64 = index
+            .conn()
+            .query_row("SELECT COUNT(*) FROM topics", [], |row| row.get(0))
+            .unwrap();
+        let tag_count: i64 = index
+            .conn()
+            .query_row("SELECT COUNT(*) FROM tags", [], |row| row.get(0))
+            .unwrap();
+
+        assert_eq!(note_count, 1);
+        assert_eq!(topic_count, 1);
+        assert_eq!(tag_count, 1);
+    }
+
+    // ===========================================
+    // Phase 4: upsert_note - Update Path Tests
+    // ===========================================
+
+    #[test]
+    fn test_upsert_note_update_basic_fields() {
+        let mut index = SqliteIndex::open_in_memory().unwrap();
+
+        // Insert initial note
+        let note1 =
+            Note::new(test_note_id(), "Original Title", test_datetime(), test_datetime()).unwrap();
+        index
+            .upsert_note(&note1, &test_content_hash(), &test_path())
+            .unwrap();
+
+        // Update the note
+        let note2 =
+            Note::new(test_note_id(), "Updated Title", test_datetime(), later_datetime()).unwrap();
+        let new_hash = ContentHash::compute(b"new content");
+        index.upsert_note(&note2, &new_hash, &test_path()).unwrap();
+
+        // Verify update
+        let retrieved = index.get_note(&test_note_id()).unwrap().unwrap();
+        assert_eq!(retrieved.title(), "Updated Title");
+        assert_eq!(retrieved.modified(), later_datetime());
+        assert_eq!(retrieved.content_hash(), &new_hash);
+    }
+
+    #[test]
+    fn test_upsert_note_removes_stale_topic_junctions() {
+        let mut index = SqliteIndex::open_in_memory().unwrap();
+
+        // Insert note with topic A
+        let note1 = Note::builder(
+            test_note_id(),
+            "Test Note",
+            test_datetime(),
+            test_datetime(),
+        )
+        .topics(vec![Topic::new("topic-a").unwrap()])
+        .build()
+        .unwrap();
+        index
+            .upsert_note(&note1, &test_content_hash(), &test_path())
+            .unwrap();
+
+        // Update note with topic B (removing topic A)
+        let note2 = Note::builder(
+            test_note_id(),
+            "Test Note",
+            test_datetime(),
+            later_datetime(),
+        )
+        .topics(vec![Topic::new("topic-b").unwrap()])
+        .build()
+        .unwrap();
+        index
+            .upsert_note(&note2, &test_content_hash(), &test_path())
+            .unwrap();
+
+        // Should only have junction for topic B
+        let retrieved = index.get_note(&test_note_id()).unwrap().unwrap();
+        assert_eq!(retrieved.topics().len(), 1);
+        assert_eq!(retrieved.topics()[0].to_string(), "topic-b");
+    }
+
+    #[test]
+    fn test_upsert_note_removes_stale_tag_junctions() {
+        let mut index = SqliteIndex::open_in_memory().unwrap();
+
+        // Insert note with tag A
+        let note1 = Note::builder(
+            test_note_id(),
+            "Test Note",
+            test_datetime(),
+            test_datetime(),
+        )
+        .tags(vec![Tag::new("tag-a").unwrap()])
+        .build()
+        .unwrap();
+        index
+            .upsert_note(&note1, &test_content_hash(), &test_path())
+            .unwrap();
+
+        // Update note with tag B (removing tag A)
+        let note2 = Note::builder(
+            test_note_id(),
+            "Test Note",
+            test_datetime(),
+            later_datetime(),
+        )
+        .tags(vec![Tag::new("tag-b").unwrap()])
+        .build()
+        .unwrap();
+        index
+            .upsert_note(&note2, &test_content_hash(), &test_path())
+            .unwrap();
+
+        // Should only have junction for tag B
+        let retrieved = index.get_note(&test_note_id()).unwrap().unwrap();
+        assert_eq!(retrieved.tags().len(), 1);
+        assert_eq!(retrieved.tags()[0].as_str(), "tag-b");
+    }
+
+    #[test]
+    fn test_upsert_note_update_preserves_created() {
+        let mut index = SqliteIndex::open_in_memory().unwrap();
+        let original_created = test_datetime();
+
+        // Insert initial note
+        let note1 =
+            Note::new(test_note_id(), "Test Note", original_created, original_created).unwrap();
+        index
+            .upsert_note(&note1, &test_content_hash(), &test_path())
+            .unwrap();
+
+        // Update the note with a different created timestamp (shouldn't change stored created)
+        let new_created = later_datetime();
+        let note2 = Note::new(test_note_id(), "Updated Note", new_created, later_datetime()).unwrap();
+        index.upsert_note(&note2, &test_content_hash(), &test_path()).unwrap();
+
+        // Verify created timestamp is preserved from first insert
+        let retrieved = index.get_note(&test_note_id()).unwrap().unwrap();
+        assert_eq!(
+            retrieved.created(),
+            original_created,
+            "created should be preserved from initial insert"
+        );
+    }
+
+    // ===========================================
+    // Phase 5: Integration Tests
+    // ===========================================
+
+    #[test]
+    fn test_upsert_then_get_roundtrip() {
+        let mut index = SqliteIndex::open_in_memory().unwrap();
+
+        let note = Note::builder(
+            test_note_id(),
+            "Roundtrip Test",
+            test_datetime(),
+            later_datetime(),
+        )
+        .description(Some("A description"))
+        .topics(vec![
+            Topic::new("software").unwrap(),
+            Topic::new("software/rust").unwrap(),
+        ])
+        .tags(vec![Tag::new("draft").unwrap(), Tag::new("review").unwrap()])
+        .aliases(vec!["alias1".to_string(), "alias2".to_string()])
+        .build()
+        .unwrap();
+        let hash = test_content_hash();
+        let path = test_path();
+
+        index.upsert_note(&note, &hash, &path).unwrap();
+
+        let retrieved = index.get_note(note.id()).unwrap().unwrap();
+
+        assert_eq!(retrieved.id(), note.id());
+        assert_eq!(retrieved.title(), note.title());
+        assert_eq!(retrieved.description(), note.description());
+        assert_eq!(retrieved.created(), note.created());
+        assert_eq!(retrieved.modified(), note.modified());
+        assert_eq!(retrieved.path(), path.as_path());
+        assert_eq!(retrieved.content_hash(), &hash);
+        assert_eq!(retrieved.topics().len(), 2);
+        assert_eq!(retrieved.tags().len(), 2);
+    }
+
+    #[test]
+    fn test_upsert_remove_get_returns_none() {
+        let mut index = SqliteIndex::open_in_memory().unwrap();
+
+        let note =
+            Note::new(test_note_id(), "Test Note", test_datetime(), test_datetime()).unwrap();
+        let hash = test_content_hash();
+        let path = test_path();
+
+        // Insert
+        index.upsert_note(&note, &hash, &path).unwrap();
+
+        // Verify exists
+        assert!(index.get_note(note.id()).unwrap().is_some());
+
+        // Remove
+        index.remove_note(note.id()).unwrap();
+
+        // Verify gone
+        assert!(
+            index.get_note(note.id()).unwrap().is_none(),
+            "should return None after removal"
+        );
+    }
+
+    #[test]
+    fn test_multiple_notes_share_topic() {
+        let mut index = SqliteIndex::open_in_memory().unwrap();
+        let shared_topic = Topic::new("shared").unwrap();
+
+        // Insert first note
+        let note1 = Note::builder(
+            test_note_id(),
+            "Note 1",
+            test_datetime(),
+            test_datetime(),
+        )
+        .topics(vec![shared_topic.clone()])
+        .build()
+        .unwrap();
+        index
+            .upsert_note(&note1, &test_content_hash(), &test_path())
+            .unwrap();
+
+        // Insert second note
+        let note2 = Note::builder(
+            other_note_id(),
+            "Note 2",
+            test_datetime(),
+            test_datetime(),
+        )
+        .topics(vec![shared_topic])
+        .build()
+        .unwrap();
+        index
+            .upsert_note(&note2, &test_content_hash(), &std::path::PathBuf::from("other.md"))
+            .unwrap();
+
+        // Only one topic row should exist
+        let topic_count: i64 = index
+            .conn()
+            .query_row("SELECT COUNT(*) FROM topics", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(topic_count, 1, "only one topic row should exist");
+
+        // Both notes should reference it
+        let junction_count: i64 = index
+            .conn()
+            .query_row("SELECT COUNT(*) FROM note_topics", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(junction_count, 2, "both notes should reference the topic");
+    }
+
+    #[test]
+    fn test_upsert_note_triggers_fts_update() {
+        let mut index = SqliteIndex::open_in_memory().unwrap();
+        let note = Note::builder(
+            test_note_id(),
+            "FTS Test Note",
+            test_datetime(),
+            test_datetime(),
+        )
+        .description(Some("searchable description"))
+        .build()
+        .unwrap();
+        let hash = test_content_hash();
+        let path = test_path();
+
+        index.upsert_note(&note, &hash, &path).unwrap();
+
+        // Search FTS for title
+        let title_count: i64 = index
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM notes_fts WHERE notes_fts MATCH 'FTS'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(title_count, 1, "FTS should index title");
+
+        // Search FTS for description
+        let desc_count: i64 = index
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM notes_fts WHERE notes_fts MATCH 'searchable'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(desc_count, 1, "FTS should index description");
     }
 }
