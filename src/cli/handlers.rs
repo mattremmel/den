@@ -477,9 +477,142 @@ pub fn handle_new(args: &NewArgs, notes_dir: &Path, config: &Config) -> Result<(
     Ok(())
 }
 
-pub fn handle_show(_args: &ShowArgs) -> Result<()> {
-    println!("show: not yet implemented");
-    Ok(())
+/// Result of resolving a note identifier.
+#[derive(Debug)]
+pub enum ResolveResult {
+    /// Exactly one note matched.
+    Unique(IndexedNote),
+    /// Multiple notes matched (ambiguous).
+    Ambiguous(Vec<IndexedNote>),
+    /// No notes matched.
+    NotFound,
+}
+
+/// Resolves a note identifier to a unique note.
+///
+/// Resolution order:
+/// 1. ID prefix match (if input looks like a ULID prefix)
+/// 2. Exact title match
+/// 3. Alias match
+///
+/// Returns `Unique` if exactly one note matches across all methods,
+/// `Ambiguous` if multiple notes match, or `NotFound` if no match.
+pub fn resolve_note<R: IndexRepository>(index: &R, identifier: &str) -> Result<ResolveResult> {
+    let identifier = identifier.trim();
+
+    // Check if it looks like a ULID prefix (alphanumeric, typically 8+ chars)
+    let looks_like_id = identifier.len() >= 4
+        && identifier.chars().all(|c| c.is_ascii_alphanumeric());
+
+    let mut candidates: Vec<IndexedNote> = Vec::new();
+
+    // 1. Try ID prefix match if it looks like one
+    if looks_like_id {
+        let id_matches = index
+            .find_by_id_prefix(identifier)
+            .with_context(|| "failed to search by ID prefix")?;
+
+        // If we get exactly one ID match, return it immediately
+        // ID matches are the most precise
+        if id_matches.len() == 1 {
+            return Ok(ResolveResult::Unique(id_matches.into_iter().next().unwrap()));
+        }
+
+        candidates.extend(id_matches);
+    }
+
+    // 2. Try exact title match
+    let title_matches = index
+        .find_by_title(identifier)
+        .with_context(|| "failed to search by title")?;
+    candidates.extend(title_matches);
+
+    // 3. Try alias match
+    let alias_matches = index
+        .find_by_alias(identifier)
+        .with_context(|| "failed to search by alias")?;
+    candidates.extend(alias_matches);
+
+    // Deduplicate by ID
+    candidates.sort_by(|a, b| a.id().to_string().cmp(&b.id().to_string()));
+    candidates.dedup_by(|a, b| a.id() == b.id());
+
+    match candidates.len() {
+        0 => Ok(ResolveResult::NotFound),
+        1 => Ok(ResolveResult::Unique(candidates.into_iter().next().unwrap())),
+        _ => Ok(ResolveResult::Ambiguous(candidates)),
+    }
+}
+
+pub fn handle_show(args: &ShowArgs, notes_dir: &Path) -> Result<()> {
+    let db_path = index_db_path(notes_dir);
+    let index = SqliteIndex::open(&db_path)
+        .with_context(|| format!("failed to open index at {}", db_path.display()))?;
+
+    match resolve_note(&index, &args.note)? {
+        ResolveResult::Unique(note) => {
+            // Read and display the note
+            let file_path = notes_dir.join(note.path());
+            let parsed = read_note(&file_path)
+                .with_context(|| format!("failed to read note: {}", file_path.display()))?;
+
+            // Display frontmatter metadata
+            println!("# {}", parsed.note.title());
+            println!();
+
+            if let Some(desc) = parsed.note.description() {
+                println!("{}", desc);
+                println!();
+            }
+
+            // Show metadata
+            println!(
+                "ID: {}  Created: {}  Modified: {}",
+                parsed.note.id().prefix(),
+                parsed.note.created().format("%Y-%m-%d"),
+                parsed.note.modified().format("%Y-%m-%d")
+            );
+
+            if !parsed.note.topics().is_empty() {
+                let topics: Vec<_> = parsed.note.topics().iter().map(|t| t.to_string()).collect();
+                println!("Topics: {}", topics.join(", "));
+            }
+
+            if !parsed.note.tags().is_empty() {
+                let tags: Vec<_> = parsed.note.tags().iter().map(|t| t.as_str()).collect();
+                println!("Tags: {}", tags.join(", "));
+            }
+
+            println!();
+
+            // Display body
+            if !parsed.body.is_empty() {
+                println!("{}", parsed.body);
+            }
+
+            Ok(())
+        }
+        ResolveResult::Ambiguous(notes) => {
+            eprintln!(
+                "Ambiguous: '{}' matches {} notes:",
+                args.note,
+                notes.len()
+            );
+            for note in &notes {
+                eprintln!(
+                    "  {} - {}",
+                    &note.id().to_string()[..8],
+                    note.title()
+                );
+            }
+            eprintln!();
+            eprintln!("Use the ID prefix to specify which note you mean.");
+            bail!("ambiguous note identifier");
+        }
+        ResolveResult::NotFound => {
+            bail!("note not found: '{}'", args.note);
+        }
+    }
 }
 
 pub fn handle_edit(_args: &EditArgs) -> Result<()> {
@@ -1128,6 +1261,293 @@ mod tests {
             assert!(result.is_err());
             let err = result.unwrap_err().to_string();
             assert!(err.contains("does not exist"));
+        }
+    }
+
+    // ===========================================
+    // resolve_note tests
+    // ===========================================
+
+    mod resolve_note_tests {
+        use super::*;
+        use crate::domain::Note;
+        use crate::index::SqliteIndex;
+
+        fn setup_index_with_notes() -> SqliteIndex {
+            let mut index = SqliteIndex::open_in_memory().unwrap();
+
+            // Note 1: "API Design"
+            let note1 = Note::builder(
+                "01HQ3K5M7NXJK4QZPW8V2R6T9A".parse().unwrap(),
+                "API Design",
+                test_datetime(),
+                test_datetime(),
+            )
+            .aliases(vec!["REST".to_string(), "api".to_string()])
+            .build()
+            .unwrap();
+            let hash1 = test_content_hash();
+            index
+                .upsert_note(&note1, &hash1, Path::new("01HQ3K5M7N-api-design.md"))
+                .unwrap();
+
+            // Note 2: "Rust Programming"
+            let note2 = Note::builder(
+                "01HQ3K5M7NXJK4QZPW8V2R6T9B".parse().unwrap(),
+                "Rust Programming",
+                test_datetime(),
+                test_datetime(),
+            )
+            .build()
+            .unwrap();
+            let hash2 = test_content_hash();
+            index
+                .upsert_note(&note2, &hash2, Path::new("01HQ3K5M7N-rust-programming.md"))
+                .unwrap();
+
+            // Note 3: "API Testing" (different prefix)
+            let note3 = Note::builder(
+                "01HQ4A2R9PXJK4QZPW8V2R6T9C".parse().unwrap(),
+                "API Testing",
+                test_datetime(),
+                test_datetime(),
+            )
+            .build()
+            .unwrap();
+            let hash3 = test_content_hash();
+            index
+                .upsert_note(&note3, &hash3, Path::new("01HQ4A2R9P-api-testing.md"))
+                .unwrap();
+
+            index
+        }
+
+        #[test]
+        fn resolve_by_full_id() {
+            let index = setup_index_with_notes();
+            let result = resolve_note(&index, "01HQ3K5M7NXJK4QZPW8V2R6T9A").unwrap();
+
+            match result {
+                ResolveResult::Unique(note) => {
+                    assert_eq!(note.title(), "API Design");
+                }
+                _ => panic!("Expected Unique result"),
+            }
+        }
+
+        #[test]
+        fn resolve_by_id_prefix_unique() {
+            let index = setup_index_with_notes();
+            // "01HQ4A2R" only matches one note
+            let result = resolve_note(&index, "01HQ4A2R").unwrap();
+
+            match result {
+                ResolveResult::Unique(note) => {
+                    assert_eq!(note.title(), "API Testing");
+                }
+                _ => panic!("Expected Unique result"),
+            }
+        }
+
+        #[test]
+        fn resolve_by_id_prefix_ambiguous() {
+            let index = setup_index_with_notes();
+            // "01HQ3K5M7N" matches both "API Design" and "Rust Programming"
+            let result = resolve_note(&index, "01HQ3K5M7N").unwrap();
+
+            match result {
+                ResolveResult::Ambiguous(notes) => {
+                    assert_eq!(notes.len(), 2);
+                }
+                _ => panic!("Expected Ambiguous result, got {:?}", result),
+            }
+        }
+
+        #[test]
+        fn resolve_by_title_exact() {
+            let index = setup_index_with_notes();
+            let result = resolve_note(&index, "Rust Programming").unwrap();
+
+            match result {
+                ResolveResult::Unique(note) => {
+                    assert_eq!(note.title(), "Rust Programming");
+                }
+                _ => panic!("Expected Unique result"),
+            }
+        }
+
+        #[test]
+        fn resolve_by_title_case_insensitive() {
+            let index = setup_index_with_notes();
+            let result = resolve_note(&index, "rust programming").unwrap();
+
+            match result {
+                ResolveResult::Unique(note) => {
+                    assert_eq!(note.title(), "Rust Programming");
+                }
+                _ => panic!("Expected Unique result"),
+            }
+        }
+
+        #[test]
+        fn resolve_by_alias() {
+            let index = setup_index_with_notes();
+            let result = resolve_note(&index, "REST").unwrap();
+
+            match result {
+                ResolveResult::Unique(note) => {
+                    assert_eq!(note.title(), "API Design");
+                }
+                _ => panic!("Expected Unique result"),
+            }
+        }
+
+        #[test]
+        fn resolve_by_alias_case_insensitive() {
+            let index = setup_index_with_notes();
+            let result = resolve_note(&index, "rest").unwrap();
+
+            match result {
+                ResolveResult::Unique(note) => {
+                    assert_eq!(note.title(), "API Design");
+                }
+                _ => panic!("Expected Unique result"),
+            }
+        }
+
+        #[test]
+        fn resolve_not_found() {
+            let index = setup_index_with_notes();
+            let result = resolve_note(&index, "nonexistent").unwrap();
+
+            match result {
+                ResolveResult::NotFound => {}
+                _ => panic!("Expected NotFound result"),
+            }
+        }
+
+        #[test]
+        fn resolve_whitespace_trimmed() {
+            let index = setup_index_with_notes();
+            let result = resolve_note(&index, "  Rust Programming  ").unwrap();
+
+            match result {
+                ResolveResult::Unique(note) => {
+                    assert_eq!(note.title(), "Rust Programming");
+                }
+                _ => panic!("Expected Unique result"),
+            }
+        }
+
+        #[test]
+        fn resolve_id_prefix_takes_precedence() {
+            // If an ID prefix uniquely matches, it should return immediately
+            // even if there are also title/alias matches
+            let index = setup_index_with_notes();
+            let result = resolve_note(&index, "01HQ4A2R9P").unwrap();
+
+            match result {
+                ResolveResult::Unique(note) => {
+                    assert_eq!(note.title(), "API Testing");
+                }
+                _ => panic!("Expected Unique result"),
+            }
+        }
+    }
+
+    // ===========================================
+    // handle_show integration tests
+    // ===========================================
+
+    mod handle_show_tests {
+        use super::*;
+        use crate::index::{IndexBuilder, SqliteIndex};
+        use tempfile::TempDir;
+
+        fn setup_notes_dir() -> TempDir {
+            let dir = TempDir::new().unwrap();
+
+            // Create index directory
+            std::fs::create_dir_all(dir.path().join(".index")).unwrap();
+
+            // Create a test note
+            let note_content = r#"---
+id: 01HQ3K5M7NXJK4QZPW8V2R6T9A
+title: API Design
+description: Notes on API design principles
+created: 2024-01-15T10:30:00Z
+modified: 2024-01-15T10:30:00Z
+topics:
+  - software/architecture
+tags:
+  - draft
+aliases:
+  - REST
+---
+
+# API Design Principles
+
+This is the body of the note.
+"#;
+            std::fs::write(
+                dir.path().join("01HQ3K5M7N-api-design.md"),
+                note_content,
+            )
+            .unwrap();
+
+            // Build index
+            let db_path = dir.path().join(".index/notes.db");
+            let mut index = SqliteIndex::open(&db_path).unwrap();
+            let builder = IndexBuilder::new(dir.path().to_path_buf());
+            builder.full_rebuild(&mut index).unwrap();
+
+            dir
+        }
+
+        #[test]
+        fn handle_show_by_id_prefix() {
+            let dir = setup_notes_dir();
+            let args = ShowArgs {
+                note: "01HQ3K5M".to_string(),
+            };
+
+            let result = handle_show(&args, dir.path());
+            assert!(result.is_ok());
+        }
+
+        #[test]
+        fn handle_show_by_title() {
+            let dir = setup_notes_dir();
+            let args = ShowArgs {
+                note: "API Design".to_string(),
+            };
+
+            let result = handle_show(&args, dir.path());
+            assert!(result.is_ok());
+        }
+
+        #[test]
+        fn handle_show_by_alias() {
+            let dir = setup_notes_dir();
+            let args = ShowArgs {
+                note: "REST".to_string(),
+            };
+
+            let result = handle_show(&args, dir.path());
+            assert!(result.is_ok());
+        }
+
+        #[test]
+        fn handle_show_not_found() {
+            let dir = setup_notes_dir();
+            let args = ShowArgs {
+                note: "nonexistent".to_string(),
+            };
+
+            let result = handle_show(&args, dir.path());
+            assert!(result.is_err());
+            let err = result.unwrap_err().to_string();
+            assert!(err.contains("not found"));
         }
     }
 }

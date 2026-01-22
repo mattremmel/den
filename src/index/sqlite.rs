@@ -538,6 +538,99 @@ impl IndexRepository for SqliteIndex {
 
         Ok(notes)
     }
+
+    fn find_by_id_prefix(&self, prefix: &str) -> IndexResult<Vec<IndexedNote>> {
+        if prefix.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // ULID IDs are uppercase, so normalize the prefix
+        let prefix_upper = prefix.to_uppercase();
+
+        let mut stmt = self.conn.prepare(
+            "SELECT id FROM notes WHERE id LIKE ? || '%' COLLATE NOCASE",
+        )?;
+
+        let note_ids: Vec<NoteId> = stmt
+            .query_map([&prefix_upper], |row| row.get::<_, String>(0))?
+            .filter_map(|r| r.ok())
+            .filter_map(|id_str| id_str.parse().ok())
+            .collect();
+
+        let mut notes = Vec::with_capacity(note_ids.len());
+        for id in note_ids {
+            if let Some(note) = self.get_note(&id)? {
+                notes.push(note);
+            }
+        }
+
+        Ok(notes)
+    }
+
+    fn find_by_title(&self, title: &str) -> IndexResult<Vec<IndexedNote>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id FROM notes WHERE title = ? COLLATE NOCASE",
+        )?;
+
+        let note_ids: Vec<NoteId> = stmt
+            .query_map([title], |row| row.get::<_, String>(0))?
+            .filter_map(|r| r.ok())
+            .filter_map(|id_str| id_str.parse().ok())
+            .collect();
+
+        let mut notes = Vec::with_capacity(note_ids.len());
+        for id in note_ids {
+            if let Some(note) = self.get_note(&id)? {
+                notes.push(note);
+            }
+        }
+
+        Ok(notes)
+    }
+
+    fn find_by_alias(&self, alias: &str) -> IndexResult<Vec<IndexedNote>> {
+        // Aliases are stored space-separated in aliases_text column
+        // We need to match the alias as a whole word
+        let pattern = format!("%{}%", alias);
+
+        let mut stmt = self.conn.prepare(
+            "SELECT id FROM notes WHERE aliases_text LIKE ? COLLATE NOCASE",
+        )?;
+
+        let note_ids: Vec<NoteId> = stmt
+            .query_map([&pattern], |row| row.get::<_, String>(0))?
+            .filter_map(|r| r.ok())
+            .filter_map(|id_str| id_str.parse().ok())
+            .collect();
+
+        // Filter to ensure exact alias match (not partial)
+        let alias_lower = alias.to_lowercase();
+        let mut notes = Vec::new();
+        for id in note_ids {
+            if let Some(note) = self.get_note(&id)? {
+                // We need to check the actual aliases - fetch from DB
+                let aliases_text: Option<String> = self.conn
+                    .query_row(
+                        "SELECT aliases_text FROM notes WHERE id = ?",
+                        [id.to_string()],
+                        |row| row.get(0),
+                    )
+                    .ok()
+                    .flatten();
+
+                if let Some(text) = aliases_text {
+                    let has_exact_match = text
+                        .split_whitespace()
+                        .any(|a| a.to_lowercase() == alias_lower);
+                    if has_exact_match {
+                        notes.push(note);
+                    }
+                }
+            }
+        }
+
+        Ok(notes)
+    }
 }
 
 // ===========================================
@@ -929,6 +1022,10 @@ mod tests {
 
     fn test_path() -> std::path::PathBuf {
         std::path::PathBuf::from("notes/test.md")
+    }
+
+    fn sample_note(title: &str) -> Note {
+        Note::new(test_note_id(), title, test_datetime(), test_datetime()).unwrap()
     }
 
     // ===========================================
@@ -3059,5 +3156,265 @@ mod tests {
 
         let results = index.search("searchable").unwrap();
         assert_eq!(results.len(), 1, "Should find note by description");
+    }
+
+    // ===========================================
+    // find_by_id_prefix tests
+    // ===========================================
+
+    #[test]
+    fn find_by_id_prefix_empty_returns_empty() {
+        let index = SqliteIndex::open_in_memory().unwrap();
+        insert_note_with_body(
+            &index,
+            "01HQ3K5M7NXJK4QZPW8V2R6T9Y",
+            "Test",
+            "body",
+        );
+
+        let results = index.find_by_id_prefix("").unwrap();
+        assert!(results.is_empty(), "Empty prefix should return no results");
+    }
+
+    #[test]
+    fn find_by_id_prefix_full_id_matches() {
+        let mut index = SqliteIndex::open_in_memory().unwrap();
+        let note = sample_note("Test Note");
+        let hash = test_content_hash();
+        let path = PathBuf::from("test.md");
+        index.upsert_note(&note, &hash, &path).unwrap();
+
+        let results = index.find_by_id_prefix("01HQ3K5M7NXJK4QZPW8V2R6T9Y").unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].title(), "Test Note");
+    }
+
+    #[test]
+    fn find_by_id_prefix_8_char_prefix_matches() {
+        let mut index = SqliteIndex::open_in_memory().unwrap();
+        let note = sample_note("Test Note");
+        let hash = test_content_hash();
+        let path = PathBuf::from("test.md");
+        index.upsert_note(&note, &hash, &path).unwrap();
+
+        let results = index.find_by_id_prefix("01HQ3K5M").unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].title(), "Test Note");
+    }
+
+    #[test]
+    fn find_by_id_prefix_case_insensitive() {
+        let mut index = SqliteIndex::open_in_memory().unwrap();
+        let note = sample_note("Test Note");
+        let hash = test_content_hash();
+        let path = PathBuf::from("test.md");
+        index.upsert_note(&note, &hash, &path).unwrap();
+
+        // Lowercase prefix should still match
+        let results = index.find_by_id_prefix("01hq3k5m").unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].title(), "Test Note");
+    }
+
+    #[test]
+    fn find_by_id_prefix_no_match() {
+        let mut index = SqliteIndex::open_in_memory().unwrap();
+        let note = sample_note("Test Note");
+        let hash = test_content_hash();
+        let path = PathBuf::from("test.md");
+        index.upsert_note(&note, &hash, &path).unwrap();
+
+        let results = index.find_by_id_prefix("ZZZZZ").unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn find_by_id_prefix_multiple_matches() {
+        let index = SqliteIndex::open_in_memory().unwrap();
+        // Insert two notes with same prefix
+        insert_note_with_body(
+            &index,
+            "01HQ3K5M7NXJK4QZPW8V2R6T9A",
+            "Note A",
+            "body a",
+        );
+        insert_note_with_body(
+            &index,
+            "01HQ3K5M7NXJK4QZPW8V2R6T9B",
+            "Note B",
+            "body b",
+        );
+
+        let results = index.find_by_id_prefix("01HQ3K5M").unwrap();
+        assert_eq!(results.len(), 2);
+    }
+
+    // ===========================================
+    // find_by_title tests
+    // ===========================================
+
+    #[test]
+    fn find_by_title_exact_match() {
+        let mut index = SqliteIndex::open_in_memory().unwrap();
+        let note = sample_note("My Exact Title");
+        let hash = test_content_hash();
+        let path = PathBuf::from("test.md");
+        index.upsert_note(&note, &hash, &path).unwrap();
+
+        let results = index.find_by_title("My Exact Title").unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].title(), "My Exact Title");
+    }
+
+    #[test]
+    fn find_by_title_case_insensitive() {
+        let mut index = SqliteIndex::open_in_memory().unwrap();
+        let note = sample_note("My Exact Title");
+        let hash = test_content_hash();
+        let path = PathBuf::from("test.md");
+        index.upsert_note(&note, &hash, &path).unwrap();
+
+        let results = index.find_by_title("my exact title").unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].title(), "My Exact Title");
+    }
+
+    #[test]
+    fn find_by_title_no_match() {
+        let mut index = SqliteIndex::open_in_memory().unwrap();
+        let note = sample_note("Some Title");
+        let hash = test_content_hash();
+        let path = PathBuf::from("test.md");
+        index.upsert_note(&note, &hash, &path).unwrap();
+
+        let results = index.find_by_title("Different Title").unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn find_by_title_partial_does_not_match() {
+        let mut index = SqliteIndex::open_in_memory().unwrap();
+        let note = sample_note("My Exact Title");
+        let hash = test_content_hash();
+        let path = PathBuf::from("test.md");
+        index.upsert_note(&note, &hash, &path).unwrap();
+
+        // Partial title should NOT match
+        let results = index.find_by_title("Exact").unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn find_by_title_multiple_with_same_title() {
+        let index = SqliteIndex::open_in_memory().unwrap();
+        insert_note_with_body(
+            &index,
+            "01HQ3K5M7NXJK4QZPW8V2R6T9A",
+            "Duplicate Title",
+            "body a",
+        );
+        insert_note_with_body(
+            &index,
+            "01HQ3K5M7NXJK4QZPW8V2R6T9B",
+            "Duplicate Title",
+            "body b",
+        );
+
+        let results = index.find_by_title("Duplicate Title").unwrap();
+        assert_eq!(results.len(), 2);
+    }
+
+    // ===========================================
+    // find_by_alias tests
+    // ===========================================
+
+    #[test]
+    fn find_by_alias_exact_match() {
+        let index = SqliteIndex::open_in_memory().unwrap();
+        insert_note_with_aliases(
+            &index,
+            "01HQ3K5M7NXJK4QZPW8V2R6T9Y",
+            "Main Title",
+            "myalias otheralias",
+        );
+
+        let results = index.find_by_alias("myalias").unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].title(), "Main Title");
+    }
+
+    #[test]
+    fn find_by_alias_case_insensitive() {
+        let index = SqliteIndex::open_in_memory().unwrap();
+        insert_note_with_aliases(
+            &index,
+            "01HQ3K5M7NXJK4QZPW8V2R6T9Y",
+            "Main Title",
+            "MyAlias",
+        );
+
+        let results = index.find_by_alias("myalias").unwrap();
+        assert_eq!(results.len(), 1);
+    }
+
+    #[test]
+    fn find_by_alias_no_match() {
+        let index = SqliteIndex::open_in_memory().unwrap();
+        insert_note_with_aliases(
+            &index,
+            "01HQ3K5M7NXJK4QZPW8V2R6T9Y",
+            "Main Title",
+            "myalias",
+        );
+
+        let results = index.find_by_alias("nonexistent").unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn find_by_alias_partial_does_not_match() {
+        let index = SqliteIndex::open_in_memory().unwrap();
+        insert_note_with_aliases(
+            &index,
+            "01HQ3K5M7NXJK4QZPW8V2R6T9Y",
+            "Main Title",
+            "myalias",
+        );
+
+        // Partial alias should NOT match
+        let results = index.find_by_alias("alias").unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn find_by_alias_multiple_aliases() {
+        let index = SqliteIndex::open_in_memory().unwrap();
+        insert_note_with_aliases(
+            &index,
+            "01HQ3K5M7NXJK4QZPW8V2R6T9Y",
+            "API Design",
+            "api REST restful",
+        );
+
+        // Should match any of the aliases
+        let results1 = index.find_by_alias("api").unwrap();
+        let results2 = index.find_by_alias("REST").unwrap();
+        let results3 = index.find_by_alias("restful").unwrap();
+
+        assert_eq!(results1.len(), 1);
+        assert_eq!(results2.len(), 1);
+        assert_eq!(results3.len(), 1);
+    }
+
+    #[test]
+    fn find_by_alias_empty_aliases() {
+        let mut index = SqliteIndex::open_in_memory().unwrap();
+        let note = sample_note("No Aliases");
+        let hash = test_content_hash();
+        let path = PathBuf::from("test.md");
+        index.upsert_note(&note, &hash, &path).unwrap();
+
+        let results = index.find_by_alias("anything").unwrap();
+        assert!(results.is_empty());
     }
 }

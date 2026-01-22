@@ -370,6 +370,18 @@ pub trait IndexRepository {
 
     /// Lists all notes in the index.
     fn list_all(&self) -> IndexResult<Vec<IndexedNote>>;
+
+    /// Finds notes whose ID starts with the given prefix.
+    ///
+    /// Returns all notes with matching ID prefix (case-insensitive).
+    /// An empty prefix returns an empty result.
+    fn find_by_id_prefix(&self, prefix: &str) -> IndexResult<Vec<IndexedNote>>;
+
+    /// Finds notes with an exact title match (case-insensitive).
+    fn find_by_title(&self, title: &str) -> IndexResult<Vec<IndexedNote>>;
+
+    /// Finds notes with a matching alias (case-insensitive).
+    fn find_by_alias(&self, alias: &str) -> IndexResult<Vec<IndexedNote>>;
 }
 
 #[cfg(test)]
