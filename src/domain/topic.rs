@@ -37,13 +37,57 @@ pub struct Topic {
     segments: Vec<String>,
 }
 
+/// The kind of error that occurred when parsing a topic.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ParseTopicErrorKind {
+    Empty,
+    EmptySegment,
+    InvalidSegment,
+}
+
 /// Error returned when parsing an invalid topic path.
 #[derive(Debug, Clone)]
-pub struct ParseTopicError(String);
+pub struct ParseTopicError {
+    kind: ParseTopicErrorKind,
+    value: String,
+    segment: Option<String>,
+}
+
+impl ParseTopicError {
+    /// Returns the invalid value that caused this error.
+    pub fn invalid_value(&self) -> &str {
+        &self.value
+    }
+
+    /// Returns the invalid segment, if a specific segment was invalid.
+    pub fn invalid_segment(&self) -> Option<&str> {
+        self.segment.as_deref()
+    }
+}
 
 impl fmt::Display for ParseTopicError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0)
+        match self.kind {
+            ParseTopicErrorKind::Empty => write!(f, "invalid topic: path cannot be empty"),
+            ParseTopicErrorKind::EmptySegment => {
+                write!(f, "invalid topic '{}': segments cannot be empty or whitespace-only", self.value)
+            }
+            ParseTopicErrorKind::InvalidSegment => {
+                if let Some(ref seg) = self.segment {
+                    write!(
+                        f,
+                        "invalid topic '{}': segment '{}' must contain only alphanumeric characters, hyphens, and underscores",
+                        self.value, seg
+                    )
+                } else {
+                    write!(
+                        f,
+                        "invalid topic '{}': segments must contain only alphanumeric characters, hyphens, and underscores",
+                        self.value
+                    )
+                }
+            }
+        }
     }
 }
 
@@ -63,6 +107,7 @@ impl Topic {
     pub fn new(path: &str) -> Result<Self, ParseTopicError> {
         // Trim surrounding whitespace
         let trimmed = path.trim();
+        let original_value = trimmed.to_string();
 
         // Split by slash
         let raw_segments: Vec<&str> = trimmed.split('/').collect();
@@ -80,17 +125,20 @@ impl Topic {
 
             // Whitespace-only segment (non-empty raw but empty after trim)
             if seg.is_empty() {
-                return Err(ParseTopicError(
-                    "invalid segment: segments cannot be whitespace-only".to_string(),
-                ));
+                return Err(ParseTopicError {
+                    kind: ParseTopicErrorKind::EmptySegment,
+                    value: original_value,
+                    segment: None,
+                });
             }
 
             // Validate the segment characters
             if !Self::is_valid_segment(seg) {
-                return Err(ParseTopicError(format!(
-                    "invalid segment '{}': segments must contain only alphanumeric characters, hyphens, and underscores",
-                    seg
-                )));
+                return Err(ParseTopicError {
+                    kind: ParseTopicErrorKind::InvalidSegment,
+                    value: original_value,
+                    segment: Some(seg.to_string()),
+                });
             }
 
             segments.push(seg.to_string());
@@ -98,7 +146,11 @@ impl Topic {
 
         // Check for empty result
         if segments.is_empty() {
-            return Err(ParseTopicError("topic path cannot be empty".to_string()));
+            return Err(ParseTopicError {
+                kind: ParseTopicErrorKind::Empty,
+                value: original_value,
+                segment: None,
+            });
         }
 
         let path = segments.join("/");
@@ -497,5 +549,33 @@ mod tests {
     fn debug_format() {
         let topic = Topic::new("software/api").unwrap();
         assert_eq!(format!("{:?}", topic), "Topic(\"software/api\")");
+    }
+
+    // ===========================================
+    // Phase 10: Structured Error Context
+    // ===========================================
+
+    #[test]
+    fn parse_error_contains_invalid_value() {
+        let err = Topic::new("soft@ware").unwrap_err();
+        assert_eq!(err.invalid_value(), "soft@ware");
+    }
+
+    #[test]
+    fn parse_error_contains_invalid_segment() {
+        let err = Topic::new("software/inv@lid/patterns").unwrap_err();
+        assert_eq!(err.invalid_segment(), Some("inv@lid"));
+    }
+
+    #[test]
+    fn parse_error_empty_has_no_segment() {
+        let err = Topic::new("").unwrap_err();
+        assert_eq!(err.invalid_segment(), None);
+    }
+
+    #[test]
+    fn parse_error_empty_shows_descriptive_message() {
+        let err = Topic::new("").unwrap_err();
+        assert!(err.to_string().contains("cannot be empty"));
     }
 }

@@ -75,11 +75,21 @@ impl fmt::Debug for NoteId {
 
 /// Error returned when parsing an invalid ULID string.
 #[derive(Debug, Clone)]
-pub struct ParseNoteIdError(String);
+pub struct ParseNoteIdError {
+    value: String,
+    reason: String,
+}
+
+impl ParseNoteIdError {
+    /// Returns the invalid value that caused this error.
+    pub fn invalid_value(&self) -> &str {
+        &self.value
+    }
+}
 
 impl fmt::Display for ParseNoteIdError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "invalid ULID: {}", self.0)
+        write!(f, "invalid ULID '{}': {}", self.value, self.reason)
     }
 }
 
@@ -89,9 +99,10 @@ impl FromStr for NoteId {
     type Err = ParseNoteIdError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ulid::from_string(s)
-            .map(NoteId)
-            .map_err(|e| ParseNoteIdError(e.to_string()))
+        Ulid::from_string(s).map(NoteId).map_err(|e| ParseNoteIdError {
+            value: s.to_string(),
+            reason: e.to_string(),
+        })
     }
 }
 
@@ -307,5 +318,21 @@ mod tests {
             msg.contains("invalid ULID"),
             "error should mention invalid ULID"
         );
+    }
+
+    // ===========================================
+    // Phase 10: Structured Error Context
+    // ===========================================
+
+    #[test]
+    fn parse_error_contains_invalid_value() {
+        let err: ParseNoteIdError = "invalid".parse::<NoteId>().unwrap_err();
+        assert_eq!(err.invalid_value(), "invalid");
+    }
+
+    #[test]
+    fn parse_error_display_includes_value() {
+        let err: ParseNoteIdError = "bad".parse::<NoteId>().unwrap_err();
+        assert!(err.to_string().contains("'bad'"));
     }
 }

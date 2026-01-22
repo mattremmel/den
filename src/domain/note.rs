@@ -5,13 +5,23 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
+/// The kind of error that occurred when constructing a note.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ParseNoteErrorKind {
+    EmptyTitle,
+}
+
 /// Error returned when constructing an invalid note.
 #[derive(Debug, Clone)]
-pub struct ParseNoteError(String);
+pub struct ParseNoteError {
+    kind: ParseNoteErrorKind,
+}
 
 impl fmt::Display for ParseNoteError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0)
+        match self.kind {
+            ParseNoteErrorKind::EmptyTitle => write!(f, "invalid note: title cannot be empty"),
+        }
     }
 }
 
@@ -83,7 +93,9 @@ impl Note {
         let trimmed = title.trim();
 
         if trimmed.is_empty() {
-            return Err(ParseNoteError("title cannot be empty".to_string()));
+            return Err(ParseNoteError {
+                kind: ParseNoteErrorKind::EmptyTitle,
+            });
         }
 
         Ok(Self {
@@ -262,7 +274,9 @@ impl NoteBuilder {
         let trimmed = self.title.trim();
 
         if trimmed.is_empty() {
-            return Err(ParseNoteError("title cannot be empty".to_string()));
+            return Err(ParseNoteError {
+                kind: ParseNoteErrorKind::EmptyTitle,
+            });
         }
 
         Ok(Note {
@@ -1209,5 +1223,16 @@ links:
         .unwrap();
 
         assert_eq!(note.description(), Some("A description with spaces"));
+    }
+
+    // ===========================================
+    // Phase 9: Structured Error Context
+    // ===========================================
+
+    #[test]
+    fn note_parse_error_shows_empty_title() {
+        let err = Note::new(test_note_id(), "", test_datetime(), test_datetime()).unwrap_err();
+        assert!(err.to_string().contains("title"));
+        assert!(err.to_string().contains("cannot be empty"));
     }
 }

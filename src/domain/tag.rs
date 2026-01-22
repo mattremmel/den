@@ -32,13 +32,39 @@ use std::str::FromStr;
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct Tag(String); // Always stored lowercase
 
+/// The kind of error that occurred when parsing a tag.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ParseTagErrorKind {
+    Empty,
+    InvalidCharacters,
+}
+
 /// Error returned when parsing an invalid tag.
 #[derive(Debug, Clone)]
-pub struct ParseTagError(String);
+pub struct ParseTagError {
+    kind: ParseTagErrorKind,
+    value: String,
+}
+
+impl ParseTagError {
+    /// Returns the invalid value that caused this error.
+    pub fn invalid_value(&self) -> &str {
+        &self.value
+    }
+}
 
 impl fmt::Display for ParseTagError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0)
+        match self.kind {
+            ParseTagErrorKind::Empty => write!(f, "invalid tag: cannot be empty"),
+            ParseTagErrorKind::InvalidCharacters => {
+                write!(
+                    f,
+                    "invalid tag '{}': must contain only alphanumeric characters, hyphens, and underscores",
+                    self.value
+                )
+            }
+        }
     }
 }
 
@@ -60,7 +86,10 @@ impl Tag {
 
         // Check for empty
         if normalized.is_empty() {
-            return Err(ParseTagError("tag cannot be empty".to_string()));
+            return Err(ParseTagError {
+                kind: ParseTagErrorKind::Empty,
+                value: normalized,
+            });
         }
 
         // Validate characters
@@ -68,10 +97,10 @@ impl Tag {
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
         {
-            return Err(ParseTagError(format!(
-                "invalid tag '{}': tags must contain only alphanumeric characters, hyphens, and underscores",
-                normalized
-            )));
+            return Err(ParseTagError {
+                kind: ParseTagErrorKind::InvalidCharacters,
+                value: normalized,
+            });
         }
 
         Ok(Self(normalized))
@@ -325,5 +354,27 @@ mod tests {
     fn as_str_returns_normalized_value() {
         let tag = Tag::new("DRAFT").unwrap();
         assert_eq!(tag.as_str(), "draft");
+    }
+
+    // ===========================================
+    // Phase 9: Structured Error Context
+    // ===========================================
+
+    #[test]
+    fn parse_error_contains_invalid_value() {
+        let err = Tag::new("tag@home").unwrap_err();
+        assert_eq!(err.invalid_value(), "tag@home");
+    }
+
+    #[test]
+    fn parse_error_empty_shows_descriptive_message() {
+        let err = Tag::new("").unwrap_err();
+        assert!(err.to_string().contains("cannot be empty"));
+    }
+
+    #[test]
+    fn parse_error_invalid_chars_shows_value() {
+        let err = Tag::new("bad@tag").unwrap_err();
+        assert!(err.to_string().contains("'bad@tag'"));
     }
 }

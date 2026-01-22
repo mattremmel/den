@@ -34,13 +34,39 @@ use std::str::FromStr;
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct Rel(String); // Always stored lowercase
 
+/// The kind of error that occurred when parsing a relationship type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ParseRelErrorKind {
+    Empty,
+    InvalidCharacters,
+}
+
 /// Error returned when parsing an invalid relationship type.
 #[derive(Debug, Clone)]
-pub struct ParseRelError(String);
+pub struct ParseRelError {
+    kind: ParseRelErrorKind,
+    value: String,
+}
+
+impl ParseRelError {
+    /// Returns the invalid value that caused this error.
+    pub fn invalid_value(&self) -> &str {
+        &self.value
+    }
+}
 
 impl fmt::Display for ParseRelError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0)
+        match self.kind {
+            ParseRelErrorKind::Empty => write!(f, "invalid relationship type: cannot be empty"),
+            ParseRelErrorKind::InvalidCharacters => {
+                write!(
+                    f,
+                    "invalid relationship type '{}': must contain only alphanumeric characters and hyphens",
+                    self.value
+                )
+            }
+        }
     }
 }
 
@@ -60,19 +86,20 @@ impl Rel {
         let normalized = s.trim().to_lowercase();
 
         if normalized.is_empty() {
-            return Err(ParseRelError(
-                "relationship type cannot be empty".to_string(),
-            ));
+            return Err(ParseRelError {
+                kind: ParseRelErrorKind::Empty,
+                value: normalized,
+            });
         }
 
         if !normalized
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '-')
         {
-            return Err(ParseRelError(format!(
-                "invalid relationship type '{}': must contain only alphanumeric characters and hyphens",
-                normalized
-            )));
+            return Err(ParseRelError {
+                kind: ParseRelErrorKind::InvalidCharacters,
+                value: normalized,
+            });
         }
 
         Ok(Self(normalized))
@@ -145,17 +172,38 @@ pub struct Link {
     context: Option<String>,
 }
 
+/// The kind of error that occurred when constructing a link.
+#[derive(Debug, Clone)]
+enum ParseLinkErrorKind {
+    EmptyRel,
+    InvalidRel(ParseRelError),
+}
+
 /// Error returned when constructing an invalid link.
 #[derive(Debug, Clone)]
-pub struct ParseLinkError(String);
+pub struct ParseLinkError {
+    kind: ParseLinkErrorKind,
+}
 
 impl fmt::Display for ParseLinkError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0)
+        match &self.kind {
+            ParseLinkErrorKind::EmptyRel => {
+                write!(f, "invalid link: must have at least one relationship type")
+            }
+            ParseLinkErrorKind::InvalidRel(err) => write!(f, "invalid link: {}", err),
+        }
     }
 }
 
-impl std::error::Error for ParseLinkError {}
+impl std::error::Error for ParseLinkError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match &self.kind {
+            ParseLinkErrorKind::InvalidRel(err) => Some(err),
+            _ => None,
+        }
+    }
+}
 
 impl Link {
     /// Creates a new Link with the given target and relationship types.
@@ -172,13 +220,15 @@ impl Link {
     /// - Any rel string is invalid
     pub fn new<S: AsRef<str>>(target: NoteId, rel: Vec<S>) -> Result<Self, ParseLinkError> {
         if rel.is_empty() {
-            return Err(ParseLinkError(
-                "link must have at least one relationship type".to_string(),
-            ));
+            return Err(ParseLinkError {
+                kind: ParseLinkErrorKind::EmptyRel,
+            });
         }
 
         let rels: Result<Vec<Rel>, _> = rel.iter().map(|s| Rel::new(s.as_ref())).collect();
-        let rels = rels.map_err(|e| ParseLinkError(e.to_string()))?;
+        let rels = rels.map_err(|e| ParseLinkError {
+            kind: ParseLinkErrorKind::InvalidRel(e),
+        })?;
 
         Ok(Self {
             target,
@@ -467,6 +517,44 @@ mod tests {
         let yaml = "''\n";
         let result: Result<Rel, _> = serde_yaml::from_str(yaml);
         assert!(result.is_err());
+    }
+
+    // ===========================================
+    // Rel Structured Error Context
+    // ===========================================
+
+    #[test]
+    fn rel_parse_error_contains_invalid_value() {
+        let err = Rel::new("see_also").unwrap_err();
+        assert_eq!(err.invalid_value(), "see_also");
+    }
+
+    #[test]
+    fn rel_parse_error_empty_shows_descriptive_message() {
+        let err = Rel::new("").unwrap_err();
+        assert!(err.to_string().contains("cannot be empty"));
+    }
+
+    #[test]
+    fn rel_parse_error_invalid_chars_shows_value() {
+        let err = Rel::new("bad_rel").unwrap_err();
+        assert!(err.to_string().contains("'bad_rel'"));
+    }
+
+    // ===========================================
+    // Link Structured Error Context
+    // ===========================================
+
+    #[test]
+    fn link_parse_error_shows_missing_rel() {
+        let err = Link::new(test_note_id(), Vec::<&str>::new()).unwrap_err();
+        assert!(err.to_string().contains("at least one relationship"));
+    }
+
+    #[test]
+    fn link_parse_error_shows_invalid_rel() {
+        let err = Link::new(test_note_id(), vec!["bad_rel"]).unwrap_err();
+        assert!(err.to_string().contains("'bad_rel'"));
     }
 
     // ===========================================
