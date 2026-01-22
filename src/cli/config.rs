@@ -65,8 +65,9 @@ impl Config {
     pub fn editor(&self) -> String {
         self.editor
             .clone()
-            .or_else(|| std::env::var("EDITOR").ok())
-            .or_else(|| std::env::var("VISUAL").ok())
+            .filter(|s| !s.is_empty())
+            .or_else(|| std::env::var("EDITOR").ok().filter(|s| !s.is_empty()))
+            .or_else(|| std::env::var("VISUAL").ok().filter(|s| !s.is_empty()))
             .unwrap_or_else(|| "vi".to_string())
     }
 }
@@ -113,5 +114,34 @@ mod tests {
     fn config_path_is_in_config_dir() {
         let path = Config::config_path();
         assert!(path.ends_with("den/config.toml"));
+    }
+
+    #[test]
+    fn editor_uses_config_setting() {
+        let config = Config {
+            dir: None,
+            editor: Some("nvim".to_string()),
+        };
+        assert_eq!(config.editor(), "nvim");
+    }
+
+    #[test]
+    fn editor_skips_empty_config_setting() {
+        let config = Config {
+            dir: None,
+            editor: Some("".to_string()),
+        };
+        // Should fall through to env vars or default, not use empty string
+        // This test verifies empty config editor is skipped
+        let editor = config.editor();
+        assert!(!editor.is_empty());
+    }
+
+    #[test]
+    fn editor_returns_non_empty_value() {
+        // With default config, should return something (either from env or "vi")
+        let config = Config::default();
+        let result = config.editor();
+        assert!(!result.is_empty(), "editor should never return empty string");
     }
 }
