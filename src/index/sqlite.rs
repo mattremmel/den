@@ -2,7 +2,8 @@
 
 use crate::domain::{Note, NoteId, Tag, Topic};
 use crate::index::{
-    IndexError, IndexRepository, IndexResult, IndexedNote, TagWithCount, create_schema,
+    IndexError, IndexRepository, IndexResult, IndexedNote, SearchResult, TagWithCount,
+    create_schema,
 };
 use crate::infra::ContentHash;
 use chrono::{DateTime, Utc};
@@ -374,8 +375,73 @@ impl IndexRepository for SqliteIndex {
         Ok(notes)
     }
 
-    fn search(&self, _query: &str) -> IndexResult<Vec<crate::index::SearchResult>> {
-        todo!("search not yet implemented")
+    fn search(&self, query: &str) -> IndexResult<Vec<SearchResult>> {
+        // Phase 1: Handle empty/whitespace queries
+        if query.trim().is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Execute FTS query with weighted BM25 ranking
+        // Weights: title=10, description=5, aliases=5, body=1
+        let mut stmt = self.conn.prepare(
+            "SELECT
+                n.id,
+                -bm25(notes_fts, 10.0, 5.0, 5.0, 1.0) as rank,
+                snippet(notes_fts, -1, '<b>', '</b>', '...', 20) as snippet
+             FROM notes_fts
+             JOIN notes n ON notes_fts.rowid = n.rowid
+             WHERE notes_fts MATCH ?1
+             ORDER BY rank DESC",
+        )?;
+
+        let row_iter = stmt.query_map([query], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, f64>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        });
+
+        // Collect results, properly handling FTS errors
+        let mut results = Vec::new();
+        for row_result in row_iter.map_err(|e| {
+            let msg = e.to_string();
+            if msg.contains("fts5") || msg.contains("syntax") {
+                IndexError::InvalidQuery(format!("invalid FTS query: {}", e))
+            } else {
+                IndexError::Database(e)
+            }
+        })? {
+            // Map rusqlite::Error to IndexError for each row
+            let row = row_result.map_err(|e| {
+                let msg = e.to_string();
+                if msg.contains("fts5") || msg.contains("syntax") {
+                    IndexError::InvalidQuery(format!("invalid FTS query: {}", e))
+                } else {
+                    IndexError::Database(e)
+                }
+            })?;
+            results.push(row);
+        }
+
+        // Fetch full notes and build SearchResult
+        let mut search_results = Vec::with_capacity(results.len());
+        for (id_str, rank, snippet) in results {
+            let note_id: NoteId = id_str
+                .parse()
+                .map_err(|e| IndexError::InvalidQuery(format!("invalid note ID: {}", e)))?;
+
+            if let Some(note) = self.get_note(&note_id)? {
+                let result = if snippet.is_empty() {
+                    SearchResult::new(note, rank)
+                } else {
+                    SearchResult::with_snippet(note, rank, snippet)
+                };
+                search_results.push(result);
+            }
+        }
+
+        Ok(search_results)
     }
 
     fn all_topics(&self) -> IndexResult<Vec<crate::index::TopicWithCount>> {
@@ -2131,5 +2197,473 @@ mod tests {
         let result = index.all_tags().unwrap();
         // Tag exists in DB but has no notes - should be excluded
         assert!(result.is_empty());
+    }
+
+    // ===========================================
+    // search() Tests - Helper function
+    // ===========================================
+
+    // Valid 64-char hex hash for tests
+    const TEST_HASH: &str = "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2";
+
+    fn insert_note_with_body(index: &SqliteIndex, id: &str, title: &str, body: &str) {
+        index
+            .conn()
+            .execute(
+                "INSERT INTO notes (id, path, title, body, created, modified, content_hash)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                rusqlite::params![
+                    id,
+                    format!("{}.md", id),
+                    title,
+                    body,
+                    "2024-01-15T10:30:00Z",
+                    "2024-01-15T10:30:00Z",
+                    TEST_HASH
+                ],
+            )
+            .unwrap();
+    }
+
+    fn insert_note_with_description(
+        index: &SqliteIndex,
+        id: &str,
+        title: &str,
+        description: &str,
+    ) {
+        index
+            .conn()
+            .execute(
+                "INSERT INTO notes (id, path, title, description, created, modified, content_hash)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                rusqlite::params![
+                    id,
+                    format!("{}.md", id),
+                    title,
+                    description,
+                    "2024-01-15T10:30:00Z",
+                    "2024-01-15T10:30:00Z",
+                    TEST_HASH
+                ],
+            )
+            .unwrap();
+    }
+
+    fn insert_note_with_aliases(index: &SqliteIndex, id: &str, title: &str, aliases: &str) {
+        index
+            .conn()
+            .execute(
+                "INSERT INTO notes (id, path, title, aliases_text, created, modified, content_hash)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                rusqlite::params![
+                    id,
+                    format!("{}.md", id),
+                    title,
+                    aliases,
+                    "2024-01-15T10:30:00Z",
+                    "2024-01-15T10:30:00Z",
+                    TEST_HASH
+                ],
+            )
+            .unwrap();
+    }
+
+    // ===========================================
+    // Phase 1: Empty Results Tests
+    // ===========================================
+
+    #[test]
+    fn search_returns_empty_when_no_matches() {
+        let index = SqliteIndex::open_in_memory().unwrap();
+        insert_note_with_body(&index, "01HQ3K5M7NXJK4QZPW8V2R6T9Y", "Rust Guide", "Learn rust");
+
+        let results = index.search("nonexistent").unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn search_empty_query_returns_empty() {
+        let index = SqliteIndex::open_in_memory().unwrap();
+        insert_note_with_body(&index, "01HQ3K5M7NXJK4QZPW8V2R6T9Y", "Rust Guide", "Learn rust");
+
+        let results = index.search("").unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn search_whitespace_query_returns_empty() {
+        let index = SqliteIndex::open_in_memory().unwrap();
+        insert_note_with_body(&index, "01HQ3K5M7NXJK4QZPW8V2R6T9Y", "Rust Guide", "Learn rust");
+
+        let results = index.search("   \t\n  ").unwrap();
+        assert!(results.is_empty());
+    }
+
+    // ===========================================
+    // Phase 2: Basic Results Tests
+    // ===========================================
+
+    #[test]
+    fn search_returns_single_match() {
+        let index = SqliteIndex::open_in_memory().unwrap();
+        insert_note_with_body(&index, "01HQ3K5M7NXJK4QZPW8V2R6T9Y", "Rust Guide", "Learn rust");
+
+        let results = index.search("rust").unwrap();
+        assert_eq!(results.len(), 1);
+    }
+
+    #[test]
+    fn search_returns_multiple_matches() {
+        let index = SqliteIndex::open_in_memory().unwrap();
+        insert_note_with_body(
+            &index,
+            "01HQ3K5M7NXJK4QZPW8V2R6T9A",
+            "Rust Basics",
+            "Learn rust",
+        );
+        insert_note_with_body(
+            &index,
+            "01HQ3K5M7NXJK4QZPW8V2R6T9B",
+            "Rust Advanced",
+            "Advanced rust",
+        );
+
+        let results = index.search("rust").unwrap();
+        assert_eq!(results.len(), 2);
+    }
+
+    #[test]
+    fn search_result_contains_complete_indexed_note() {
+        let mut index = SqliteIndex::open_in_memory().unwrap();
+        let topic = Topic::new("programming").unwrap();
+        let tag = Tag::new("tutorial").unwrap();
+
+        let note = Note::builder(
+            test_note_id(),
+            "Rust Guide",
+            test_datetime(),
+            test_datetime(),
+        )
+        .description(Some("A comprehensive rust guide"))
+        .topics(vec![topic.clone()])
+        .tags(vec![tag.clone()])
+        .build()
+        .unwrap();
+        index
+            .upsert_note(&note, &test_content_hash(), &test_path())
+            .unwrap();
+
+        let results = index.search("rust").unwrap();
+        assert_eq!(results.len(), 1);
+
+        let indexed_note = results[0].note();
+        assert_eq!(indexed_note.id(), note.id());
+        assert_eq!(indexed_note.title(), "Rust Guide");
+        assert_eq!(indexed_note.description(), Some("A comprehensive rust guide"));
+        assert_eq!(indexed_note.topics(), &[topic]);
+        assert_eq!(indexed_note.tags(), &[tag]);
+    }
+
+    // ===========================================
+    // Phase 3: Ranking Tests
+    // ===========================================
+
+    #[test]
+    fn search_results_ordered_by_relevance() {
+        let index = SqliteIndex::open_in_memory().unwrap();
+        // Note A: keyword in title
+        insert_note_with_body(
+            &index,
+            "01HQ3K5M7NXJK4QZPW8V2R6T9A",
+            "rust",
+            "something else",
+        );
+        // Note B: keyword in body only
+        insert_note_with_body(&index, "01HQ3K5M7NXJK4QZPW8V2R6T9B", "other title", "rust");
+
+        let results = index.search("rust").unwrap();
+        assert_eq!(results.len(), 2);
+
+        // Title match should rank higher (first)
+        assert!(
+            results[0].note().title() == "rust",
+            "Title match should rank higher"
+        );
+    }
+
+    #[test]
+    fn search_rank_is_positive() {
+        let index = SqliteIndex::open_in_memory().unwrap();
+        insert_note_with_body(&index, "01HQ3K5M7NXJK4QZPW8V2R6T9Y", "Rust Guide", "Learn rust");
+
+        let results = index.search("rust").unwrap();
+        assert_eq!(results.len(), 1);
+        assert!(
+            results[0].rank() > 0.0,
+            "Rank should be positive (negated BM25), got {}",
+            results[0].rank()
+        );
+    }
+
+    #[test]
+    fn search_title_ranks_higher_than_body() {
+        let index = SqliteIndex::open_in_memory().unwrap();
+        // Note A: keyword in title only
+        insert_note_with_body(
+            &index,
+            "01HQ3K5M7NXJK4QZPW8V2R6T9A",
+            "rust",
+            "other content",
+        );
+        // Note B: keyword in body only
+        insert_note_with_body(&index, "01HQ3K5M7NXJK4QZPW8V2R6T9B", "other title", "rust");
+
+        let results = index.search("rust").unwrap();
+        assert_eq!(results.len(), 2);
+
+        // Find title match and body match
+        let title_result = results.iter().find(|r| r.note().title() == "rust").unwrap();
+        let body_result = results.iter().find(|r| r.note().title() == "other title").unwrap();
+
+        assert!(
+            title_result.rank() > body_result.rank(),
+            "Title match rank ({}) should be higher than body match rank ({})",
+            title_result.rank(),
+            body_result.rank()
+        );
+    }
+
+    #[test]
+    fn search_title_ranks_higher_than_description() {
+        let index = SqliteIndex::open_in_memory().unwrap();
+        // Note A: keyword in title only
+        insert_note_with_description(
+            &index,
+            "01HQ3K5M7NXJK4QZPW8V2R6T9A",
+            "rust",
+            "other content",
+        );
+        // Note B: keyword in description only
+        insert_note_with_description(
+            &index,
+            "01HQ3K5M7NXJK4QZPW8V2R6T9B",
+            "other title",
+            "rust",
+        );
+
+        let results = index.search("rust").unwrap();
+        assert_eq!(results.len(), 2);
+
+        // First result should be title match
+        assert_eq!(
+            results[0].note().title(),
+            "rust",
+            "Title match should rank first"
+        );
+        assert!(
+            results[0].rank() > results[1].rank(),
+            "Title match rank ({}) should be higher than description match rank ({})",
+            results[0].rank(),
+            results[1].rank()
+        );
+    }
+
+    // ===========================================
+    // Phase 4: Error Handling Tests
+    // ===========================================
+
+    #[test]
+    fn search_invalid_fts_query_returns_error() {
+        let index = SqliteIndex::open_in_memory().unwrap();
+        insert_note_with_body(&index, "01HQ3K5M7NXJK4QZPW8V2R6T9Y", "Rust Guide", "Learn rust");
+
+        // FTS5 rejects queries that start with AND/OR operators
+        let result = index.search("AND hello");
+
+        // The query should fail due to FTS5 syntax error
+        assert!(result.is_err(), "Invalid FTS query should return error");
+
+        match result {
+            Err(IndexError::InvalidQuery(msg)) => {
+                assert!(!msg.is_empty(), "Error message should not be empty");
+            }
+            Err(IndexError::Database(e)) => {
+                // FTS errors may come through as Database errors
+                assert!(
+                    !e.to_string().is_empty(),
+                    "Database error should have message"
+                );
+            }
+            Ok(_) => panic!("Expected error for invalid FTS query"),
+            Err(e) => panic!("Unexpected error type: {:?}", e),
+        }
+    }
+
+    #[test]
+    fn search_special_characters_handled() {
+        let index = SqliteIndex::open_in_memory().unwrap();
+        insert_note_with_body(
+            &index,
+            "01HQ3K5M7NXJK4QZPW8V2R6T9Y",
+            "Rust Guide",
+            "Learn rust programming",
+        );
+
+        // Prefix search with * should work
+        let results = index.search("prog*").unwrap();
+        assert_eq!(results.len(), 1, "Prefix search with * should work");
+    }
+
+    // ===========================================
+    // Phase 5: Snippets Tests
+    // ===========================================
+
+    #[test]
+    fn search_result_includes_snippet() {
+        let index = SqliteIndex::open_in_memory().unwrap();
+        insert_note_with_body(
+            &index,
+            "01HQ3K5M7NXJK4QZPW8V2R6T9Y",
+            "Guide",
+            "Learn rust programming quickly",
+        );
+
+        let results = index.search("rust").unwrap();
+        assert_eq!(results.len(), 1);
+        assert!(
+            results[0].snippet().is_some(),
+            "Should have a snippet when body matches"
+        );
+    }
+
+    #[test]
+    fn search_snippet_contains_match_context() {
+        let index = SqliteIndex::open_in_memory().unwrap();
+        insert_note_with_body(
+            &index,
+            "01HQ3K5M7NXJK4QZPW8V2R6T9Y",
+            "Guide",
+            "Learn rust programming quickly and efficiently",
+        );
+
+        let results = index.search("rust").unwrap();
+        assert_eq!(results.len(), 1);
+
+        let snippet = results[0].snippet().unwrap();
+        // FTS5 snippet should contain the match with markers
+        assert!(
+            snippet.contains("<b>") || snippet.contains("rust"),
+            "Snippet should contain match context: {}",
+            snippet
+        );
+    }
+
+    // ===========================================
+    // Phase 6: Edge Cases Tests
+    // ===========================================
+
+    #[test]
+    fn search_unicode_terms() {
+        let index = SqliteIndex::open_in_memory().unwrap();
+        insert_note_with_body(
+            &index,
+            "01HQ3K5M7NXJK4QZPW8V2R6T9Y",
+            "Café Guide",
+            "Résumé preparation",
+        );
+
+        let results = index.search("café").unwrap();
+        assert_eq!(results.len(), 1, "Should find unicode term");
+    }
+
+    #[test]
+    fn search_is_case_insensitive() {
+        let index = SqliteIndex::open_in_memory().unwrap();
+        insert_note_with_body(&index, "01HQ3K5M7NXJK4QZPW8V2R6T9Y", "Rust Guide", "Learn Rust");
+
+        // Search with lowercase should find uppercase
+        let results = index.search("rust").unwrap();
+        assert_eq!(results.len(), 1, "Case-insensitive search should work");
+
+        // Search with uppercase should find lowercase
+        let results = index.search("RUST").unwrap();
+        assert_eq!(results.len(), 1, "Case-insensitive search should work");
+    }
+
+    #[test]
+    fn search_multiple_words() {
+        let index = SqliteIndex::open_in_memory().unwrap();
+        insert_note_with_body(
+            &index,
+            "01HQ3K5M7NXJK4QZPW8V2R6T9Y",
+            "Rust Programming Guide",
+            "Learn rust programming",
+        );
+
+        // Multiple words should match documents containing all terms
+        let results = index.search("rust guide").unwrap();
+        assert_eq!(results.len(), 1, "Multiple words search should work");
+    }
+
+    #[test]
+    fn search_phrase_with_quotes() {
+        let index = SqliteIndex::open_in_memory().unwrap();
+        // Note A: has exact phrase
+        insert_note_with_body(
+            &index,
+            "01HQ3K5M7NXJK4QZPW8V2R6T9A",
+            "Rust Programming",
+            "about rust programming here",
+        );
+        // Note B: has words but not as phrase
+        insert_note_with_body(
+            &index,
+            "01HQ3K5M7NXJK4QZPW8V2R6T9B",
+            "Programming in Rust",
+            "rust is good. programming is fun.",
+        );
+
+        // Exact phrase search
+        let results = index.search("\"rust programming\"").unwrap();
+        assert!(
+            results.len() >= 1,
+            "Phrase search should find at least one result"
+        );
+        // The exact phrase match should be first or only
+        assert!(
+            results[0].note().title() == "Rust Programming"
+                || results[0]
+                    .snippet()
+                    .map_or(false, |s| s.contains("rust programming")),
+            "Phrase search should find exact phrase match"
+        );
+    }
+
+    #[test]
+    fn search_finds_by_alias() {
+        let index = SqliteIndex::open_in_memory().unwrap();
+        insert_note_with_aliases(
+            &index,
+            "01HQ3K5M7NXJK4QZPW8V2R6T9Y",
+            "Main Title",
+            "myalias otheralias",
+        );
+
+        let results = index.search("myalias").unwrap();
+        assert_eq!(results.len(), 1, "Should find note by alias");
+    }
+
+    #[test]
+    fn search_finds_by_description() {
+        let index = SqliteIndex::open_in_memory().unwrap();
+        insert_note_with_description(
+            &index,
+            "01HQ3K5M7NXJK4QZPW8V2R6T9Y",
+            "Main Title",
+            "searchable description here",
+        );
+
+        let results = index.search("searchable").unwrap();
+        assert_eq!(results.len(), 1, "Should find note by description");
     }
 }
