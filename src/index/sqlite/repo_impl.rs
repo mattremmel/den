@@ -186,6 +186,36 @@ impl IndexRepository for SqliteIndex {
             )?;
         }
 
+        // 6. Delete existing links (cascade will remove link_rels)
+        tx.conn()
+            .execute("DELETE FROM links WHERE source_id = ?", [&id_str])?;
+
+        // 7. Insert links and their rels
+        for link in note.links() {
+            let target_str = link.target().to_string();
+            let context = link.context();
+
+            tx.conn().execute(
+                "INSERT INTO links (source_id, target_id, note) VALUES (?, ?, ?)",
+                rusqlite::params![id_str, target_str, context],
+            )?;
+
+            // Get the link id we just inserted
+            let link_id: i64 = tx.conn().query_row(
+                "SELECT id FROM links WHERE source_id = ? AND target_id = ?",
+                [&id_str, &target_str],
+                |row| row.get(0),
+            )?;
+
+            // Insert rels for this link
+            for rel in link.rel() {
+                tx.conn().execute(
+                    "INSERT INTO link_rels (link_id, rel) VALUES (?, ?)",
+                    rusqlite::params![link_id, rel.as_str()],
+                )?;
+            }
+        }
+
         tx.commit()
     }
 

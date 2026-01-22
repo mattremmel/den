@@ -38,7 +38,7 @@ pub fn run() -> Result<()> {
         Command::Untag(args) => handle_untag(args, &notes_dir),
         Command::Check(args) => handle_check(args),
         Command::Backlinks(args) => handle_backlinks(args, &notes_dir),
-        Command::Link(args) => handle_link(args),
+        Command::Link(args) => handle_link(args, &notes_dir),
         Command::Unlink(args) => handle_unlink(args),
         Command::Rels(args) => handle_rels(args),
     }

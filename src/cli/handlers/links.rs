@@ -1,13 +1,16 @@
 //! Link-related command handlers (backlinks, link, unlink, rels).
 
 use anyhow::{bail, Context, Result};
+use chrono::Utc;
 use std::path::Path;
 
-use super::{index_db_path, truncate_str};
 use super::resolve::{print_ambiguous_notes, resolve_note, ResolveResult};
+use super::{index_db_path, truncate_str};
 use crate::cli::output::{NoteListing, Output, OutputFormat};
 use crate::cli::{BacklinksArgs, LinkArgs, RelsArgs, UnlinkArgs};
-use crate::index::{IndexRepository, SqliteIndex};
+use crate::domain::{Link, Note, NoteId, Rel};
+use crate::index::{IndexBuilder, IndexRepository, SqliteIndex};
+use crate::infra::{read_note, write_note};
 
 pub fn handle_backlinks(args: &BacklinksArgs, notes_dir: &Path) -> Result<()> {
     let db_path = index_db_path(notes_dir);
@@ -85,9 +88,160 @@ pub fn handle_backlinks(args: &BacklinksArgs, notes_dir: &Path) -> Result<()> {
     }
 }
 
-pub fn handle_link(_args: &LinkArgs) -> Result<()> {
-    println!("link: not yet implemented");
+pub fn handle_link(args: &LinkArgs, notes_dir: &Path) -> Result<()> {
+    // 1. Validate rels
+    if args.rels.is_empty() {
+        bail!("link requires at least one --rel");
+    }
+    let rels: Vec<Rel> = args
+        .rels
+        .iter()
+        .map(|r| Rel::new(r).map_err(|e| anyhow::anyhow!("invalid rel '{}': {}", r, e)))
+        .collect::<Result<Vec<_>>>()?;
+
+    // 2. Open index
+    let db_path = index_db_path(notes_dir);
+    let index = SqliteIndex::open(&db_path)
+        .with_context(|| format!("failed to open index at {}", db_path.display()))?;
+
+    // 3. Resolve source (must exist)
+    let source_note = match resolve_note(&index, &args.source)? {
+        ResolveResult::Unique(note) => note,
+        ResolveResult::Ambiguous(notes) => {
+            print_ambiguous_notes(&args.source, &notes);
+            bail!("ambiguous source note identifier");
+        }
+        ResolveResult::NotFound => {
+            bail!("source note not found: '{}'", args.source);
+        }
+    };
+
+    // 4. Resolve target (may not exist - broken links allowed)
+    let target_id: NoteId = match resolve_note(&index, &args.target)? {
+        ResolveResult::Unique(note) => note.id().clone(),
+        ResolveResult::Ambiguous(notes) => {
+            print_ambiguous_notes(&args.target, &notes);
+            bail!("ambiguous target note identifier");
+        }
+        ResolveResult::NotFound => args
+            .target
+            .parse::<NoteId>()
+            .map_err(|_| anyhow::anyhow!("target not found and not a valid note ID: '{}'", args.target))?,
+    };
+
+    // 5. Read source note from disk
+    let file_path = notes_dir.join(source_note.path());
+    let parsed = read_note(&file_path)
+        .with_context(|| format!("failed to read note: {}", file_path.display()))?;
+
+    // 6. Build new link
+    let new_link = match &args.note {
+        Some(ctx) => Link::with_context(
+            target_id.clone(),
+            rels.iter().map(|r| r.as_str()).collect(),
+            ctx,
+        )?,
+        None => Link::new(target_id.clone(), rels.iter().map(|r| r.as_str()).collect())?,
+    };
+
+    // 7. Check for existing link, merge if needed
+    let (updated_links, changed) = merge_or_add_link(parsed.note.links(), &new_link);
+
+    if !changed {
+        println!(
+            "Link already exists: '{}' -> {}",
+            parsed.note.title(),
+            target_id.prefix()
+        );
+        return Ok(());
+    }
+
+    // 8. Rebuild note with updated links
+    let now = Utc::now();
+    let updated_note = Note::builder(
+        parsed.note.id().clone(),
+        parsed.note.title(),
+        parsed.note.created(),
+        now,
+    )
+    .description(parsed.note.description().map(String::from))
+    .topics(parsed.note.topics().to_vec())
+    .aliases(parsed.note.aliases().to_vec())
+    .tags(parsed.note.tags().to_vec())
+    .links(updated_links)
+    .build()
+    .with_context(|| "failed to rebuild note")?;
+
+    // 9. Write atomically
+    write_note(&file_path, &updated_note, &parsed.body)
+        .with_context(|| "failed to write updated note")?;
+
+    // 10. Update index
+    if let Ok(mut idx) = SqliteIndex::open(&db_path) {
+        let builder = IndexBuilder::new(notes_dir.to_path_buf());
+        let _ = builder.incremental_update(&mut idx);
+    }
+
+    println!(
+        "Added link: '{}' [{}] -> [{}] ({})",
+        updated_note.title(),
+        updated_note.id().prefix(),
+        target_id.prefix(),
+        new_link
+            .rel()
+            .iter()
+            .map(|r| r.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
     Ok(())
+}
+
+/// Merge new link into existing links, or add if not present.
+/// Returns (updated_links, changed).
+fn merge_or_add_link(existing: &[Link], new: &Link) -> (Vec<Link>, bool) {
+    let mut links = existing.to_vec();
+
+    if let Some(pos) = links.iter().position(|l| l.target() == new.target()) {
+        let existing_link = &links[pos];
+
+        // Check if rels need merging
+        let mut merged_rels: Vec<Rel> = existing_link.rel().to_vec();
+        let mut added_rels = false;
+        for rel in new.rel() {
+            if !merged_rels.contains(rel) {
+                merged_rels.push(rel.clone());
+                added_rels = true;
+            }
+        }
+
+        // Check if context changed
+        let context_changed = new.context().is_some() && new.context() != existing_link.context();
+
+        if !added_rels && !context_changed {
+            return (links, false); // No change
+        }
+
+        // Build merged link
+        let context = new.context().or(existing_link.context());
+        let merged = match context {
+            Some(ctx) => Link::with_context(
+                new.target().clone(),
+                merged_rels.iter().map(|r| r.as_str()).collect(),
+                ctx,
+            )
+            .unwrap(),
+            None => {
+                Link::new(new.target().clone(), merged_rels.iter().map(|r| r.as_str()).collect())
+                    .unwrap()
+            }
+        };
+        links[pos] = merged;
+        (links, true)
+    } else {
+        links.push(new.clone());
+        (links, true)
+    }
 }
 
 pub fn handle_unlink(_args: &UnlinkArgs) -> Result<()> {

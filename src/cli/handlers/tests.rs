@@ -2321,3 +2321,534 @@ mod handle_backlinks_tests {
         assert!(result.is_ok());
     }
 }
+
+// ===========================================
+// handle_link tests
+// ===========================================
+
+mod handle_link_tests {
+    use super::*;
+    use crate::cli::LinkArgs;
+    use crate::index::{IndexBuilder, SqliteIndex};
+    use crate::infra::read_note;
+    use tempfile::TempDir;
+
+    // Test helpers
+
+    fn create_test_note(dir: &Path, id: &str, title: &str) {
+        let content = format!(
+            r#"---
+id: {id}
+title: {title}
+created: 2024-01-15T10:30:00Z
+modified: 2024-01-15T10:30:00Z
+---
+Body content.
+"#
+        );
+        let prefix = &id[..10];
+        let slug = title.to_lowercase().replace(' ', "-");
+        let filename = format!("{prefix}-{slug}.md");
+        std::fs::write(dir.join(&filename), content).unwrap();
+    }
+
+    fn create_test_note_with_links(dir: &Path, id: &str, title: &str, links_yaml: &str) {
+        let content = format!(
+            r#"---
+id: {id}
+title: {title}
+created: 2024-01-15T10:30:00Z
+modified: 2024-01-15T10:30:00Z
+links:
+{links_yaml}
+---
+Body content.
+"#
+        );
+        let prefix = &id[..10];
+        let slug = title.to_lowercase().replace(' ', "-");
+        let filename = format!("{prefix}-{slug}.md");
+        std::fs::write(dir.join(&filename), content).unwrap();
+    }
+
+    fn setup_two_notes() -> TempDir {
+        let dir = TempDir::new().unwrap();
+        std::fs::create_dir_all(dir.path().join(".index")).unwrap();
+        create_test_note(dir.path(), "01HQ3K5M7NXJK4QZPW8V2R6T9A", "Source Note");
+        create_test_note(dir.path(), "01HQ4A2R9PXJK4QZPW8V2R6T9B", "Target Note");
+        // Build index
+        let db_path = dir.path().join(".index/notes.db");
+        let mut index = SqliteIndex::open(&db_path).unwrap();
+        IndexBuilder::new(dir.path().to_path_buf())
+            .full_rebuild(&mut index)
+            .unwrap();
+        dir
+    }
+
+    fn setup_ambiguous_notes() -> TempDir {
+        let dir = TempDir::new().unwrap();
+        std::fs::create_dir_all(dir.path().join(".index")).unwrap();
+        // Two notes with same ID prefix (10 chars)
+        create_test_note(dir.path(), "01HQ3K5M7NXJK4QZPW8V2R6T9A", "Note A");
+        create_test_note(dir.path(), "01HQ3K5M7NXJK4QZPW8V2R6T9B", "Note B");
+        create_test_note(dir.path(), "01HQ4A2R9PXJK4QZPW8V2R6T9C", "Target Note");
+        let db_path = dir.path().join(".index/notes.db");
+        let mut index = SqliteIndex::open(&db_path).unwrap();
+        IndexBuilder::new(dir.path().to_path_buf())
+            .full_rebuild(&mut index)
+            .unwrap();
+        dir
+    }
+
+    fn test_link_args(source: &str, target: &str, rels: Vec<&str>) -> LinkArgs {
+        LinkArgs {
+            source: source.to_string(),
+            target: target.to_string(),
+            rels: rels.iter().map(|s| s.to_string()).collect(),
+            note: None,
+        }
+    }
+
+    fn test_link_args_with_context(
+        source: &str,
+        target: &str,
+        rels: Vec<&str>,
+        context: &str,
+    ) -> LinkArgs {
+        LinkArgs {
+            source: source.to_string(),
+            target: target.to_string(),
+            rels: rels.iter().map(|s| s.to_string()).collect(),
+            note: Some(context.to_string()),
+        }
+    }
+
+    // ===========================================
+    // Phase 1: Input Validation Tests
+    // ===========================================
+
+    #[test]
+    fn handle_link_no_rels_returns_error() {
+        let dir = setup_two_notes();
+        let args = LinkArgs {
+            source: "Source Note".to_string(),
+            target: "Target Note".to_string(),
+            rels: vec![],
+            note: None,
+        };
+        let result = handle_link(&args, dir.path());
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("at least one --rel"));
+    }
+
+    #[test]
+    fn handle_link_invalid_rel_returns_error() {
+        let dir = setup_two_notes();
+        let args = test_link_args("Source Note", "Target Note", vec!["has_underscore"]);
+        let result = handle_link(&args, dir.path());
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("invalid rel"));
+    }
+
+    #[test]
+    fn handle_link_one_invalid_rel_among_many_returns_error() {
+        let dir = setup_two_notes();
+        let args = test_link_args("Source Note", "Target Note", vec!["valid", "in@valid"]);
+        let result = handle_link(&args, dir.path());
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("invalid rel"));
+        assert!(err.contains("in@valid"));
+    }
+
+    // ===========================================
+    // Phase 2: Source Resolution Tests
+    // ===========================================
+
+    #[test]
+    fn handle_link_source_not_found_returns_error() {
+        let dir = setup_two_notes();
+        let args = test_link_args("nonexistent", "Target Note", vec!["parent"]);
+        let result = handle_link(&args, dir.path());
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("source note not found"));
+        assert!(err.contains("nonexistent"));
+    }
+
+    #[test]
+    fn handle_link_source_ambiguous_returns_error() {
+        let dir = setup_ambiguous_notes();
+        let args = test_link_args("01HQ3K5M7N", "Target Note", vec!["parent"]);
+        let result = handle_link(&args, dir.path());
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("ambiguous source"));
+    }
+
+    #[test]
+    fn handle_link_source_by_id_prefix_resolves() {
+        let dir = setup_two_notes();
+        // Use unique prefix that matches only Source Note
+        let args = test_link_args("01HQ3K5M", "Target Note", vec!["parent"]);
+        let result = handle_link(&args, dir.path());
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn handle_link_source_by_title_resolves() {
+        let dir = setup_two_notes();
+        let args = test_link_args("Source Note", "Target Note", vec!["parent"]);
+        let result = handle_link(&args, dir.path());
+        assert!(result.is_ok());
+    }
+
+    // ===========================================
+    // Phase 3: Target Resolution Tests
+    // ===========================================
+
+    #[test]
+    fn handle_link_target_resolves_to_full_id() {
+        let dir = setup_two_notes();
+        // Use a partial ID prefix for target
+        let args = test_link_args("Source Note", "01HQ4A2R", vec!["parent"]);
+        let result = handle_link(&args, dir.path());
+        assert!(result.is_ok());
+
+        // Verify link was created with full target ID
+        let file_path = dir.path().join("01HQ3K5M7N-source-note.md");
+        let parsed = read_note(&file_path).unwrap();
+        assert_eq!(parsed.note.links().len(), 1);
+        assert_eq!(
+            parsed.note.links()[0].target().to_string(),
+            "01HQ4A2R9PXJK4QZPW8V2R6T9B"
+        );
+    }
+
+    #[test]
+    fn handle_link_target_by_title_uses_resolved_id() {
+        let dir = setup_two_notes();
+        let args = test_link_args("Source Note", "Target Note", vec!["parent"]);
+        let result = handle_link(&args, dir.path());
+        assert!(result.is_ok());
+
+        let file_path = dir.path().join("01HQ3K5M7N-source-note.md");
+        let parsed = read_note(&file_path).unwrap();
+        assert_eq!(parsed.note.links().len(), 1);
+        // Target ID should be the full ID of Target Note
+        assert_eq!(
+            parsed.note.links()[0].target().to_string(),
+            "01HQ4A2R9PXJK4QZPW8V2R6T9B"
+        );
+    }
+
+    #[test]
+    fn handle_link_target_not_found_valid_ulid_creates_broken_link() {
+        let dir = setup_two_notes();
+        // Use a valid ULID that doesn't exist in the index
+        let args = test_link_args(
+            "Source Note",
+            "01HZ9Z9Z9ZXJK4QZPW8V2R6T9Z",
+            vec!["parent"],
+        );
+        let result = handle_link(&args, dir.path());
+        assert!(result.is_ok());
+
+        // Verify broken link was created
+        let file_path = dir.path().join("01HQ3K5M7N-source-note.md");
+        let parsed = read_note(&file_path).unwrap();
+        assert_eq!(parsed.note.links().len(), 1);
+        assert_eq!(
+            parsed.note.links()[0].target().to_string(),
+            "01HZ9Z9Z9ZXJK4QZPW8V2R6T9Z"
+        );
+    }
+
+    #[test]
+    fn handle_link_target_ambiguous_returns_error() {
+        let dir = setup_ambiguous_notes();
+        let args = test_link_args("Target Note", "01HQ3K5M7N", vec!["parent"]);
+        let result = handle_link(&args, dir.path());
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("ambiguous target"));
+    }
+
+    #[test]
+    fn handle_link_target_invalid_returns_error() {
+        let dir = setup_two_notes();
+        let args = test_link_args("Source Note", "not-a-ulid", vec!["parent"]);
+        let result = handle_link(&args, dir.path());
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("target not found and not a valid note ID"));
+    }
+
+    // ===========================================
+    // Phase 4: Link Creation Tests (Happy Path)
+    // ===========================================
+
+    #[test]
+    fn handle_link_creates_link_with_single_rel() {
+        let dir = setup_two_notes();
+        let args = test_link_args("Source Note", "Target Note", vec!["parent"]);
+        let result = handle_link(&args, dir.path());
+        assert!(result.is_ok());
+
+        let file_path = dir.path().join("01HQ3K5M7N-source-note.md");
+        let parsed = read_note(&file_path).unwrap();
+        assert_eq!(parsed.note.links().len(), 1);
+        assert_eq!(parsed.note.links()[0].rel().len(), 1);
+        assert_eq!(parsed.note.links()[0].rel()[0].as_str(), "parent");
+    }
+
+    #[test]
+    fn handle_link_creates_link_with_multiple_rels() {
+        let dir = setup_two_notes();
+        let args = test_link_args("Source Note", "Target Note", vec!["parent", "see-also"]);
+        let result = handle_link(&args, dir.path());
+        assert!(result.is_ok());
+
+        let file_path = dir.path().join("01HQ3K5M7N-source-note.md");
+        let parsed = read_note(&file_path).unwrap();
+        assert_eq!(parsed.note.links().len(), 1);
+        assert_eq!(parsed.note.links()[0].rel().len(), 2);
+    }
+
+    #[test]
+    fn handle_link_creates_link_with_context() {
+        let dir = setup_two_notes();
+        let args =
+            test_link_args_with_context("Source Note", "Target Note", vec!["parent"], "Some context");
+        let result = handle_link(&args, dir.path());
+        assert!(result.is_ok());
+
+        let file_path = dir.path().join("01HQ3K5M7N-source-note.md");
+        let parsed = read_note(&file_path).unwrap();
+        assert_eq!(parsed.note.links().len(), 1);
+        assert_eq!(parsed.note.links()[0].context(), Some("Some context"));
+    }
+
+    #[test]
+    fn handle_link_normalizes_rels() {
+        let dir = setup_two_notes();
+        let args = test_link_args("Source Note", "Target Note", vec!["PARENT", "See-Also"]);
+        let result = handle_link(&args, dir.path());
+        assert!(result.is_ok());
+
+        let file_path = dir.path().join("01HQ3K5M7N-source-note.md");
+        let parsed = read_note(&file_path).unwrap();
+        let rels: Vec<&str> = parsed.note.links()[0]
+            .rel()
+            .iter()
+            .map(|r| r.as_str())
+            .collect();
+        assert_eq!(rels, vec!["parent", "see-also"]);
+    }
+
+    #[test]
+    fn handle_link_preserves_existing_links() {
+        let dir = TempDir::new().unwrap();
+        std::fs::create_dir_all(dir.path().join(".index")).unwrap();
+
+        // Create source note with an existing link
+        let existing_link_yaml = r#"  - id: 01HZ9Z9Z9ZXJK4QZPW8V2R6T9X
+    rel:
+      - existing"#;
+        create_test_note_with_links(
+            dir.path(),
+            "01HQ3K5M7NXJK4QZPW8V2R6T9A",
+            "Source Note",
+            existing_link_yaml,
+        );
+        create_test_note(dir.path(), "01HQ4A2R9PXJK4QZPW8V2R6T9B", "Target Note");
+
+        let db_path = dir.path().join(".index/notes.db");
+        let mut index = SqliteIndex::open(&db_path).unwrap();
+        IndexBuilder::new(dir.path().to_path_buf())
+            .full_rebuild(&mut index)
+            .unwrap();
+
+        let args = test_link_args("Source Note", "Target Note", vec!["parent"]);
+        let result = handle_link(&args, dir.path());
+        assert!(result.is_ok());
+
+        let file_path = dir.path().join("01HQ3K5M7N-source-note.md");
+        let parsed = read_note(&file_path).unwrap();
+        assert_eq!(parsed.note.links().len(), 2);
+    }
+
+    // ===========================================
+    // Phase 5: Idempotency Tests
+    // ===========================================
+
+    #[test]
+    fn handle_link_same_target_same_rels_is_noop() {
+        let dir = setup_two_notes();
+        let args = test_link_args("Source Note", "Target Note", vec!["parent"]);
+
+        // First call creates the link
+        handle_link(&args, dir.path()).unwrap();
+
+        let file_path = dir.path().join("01HQ3K5M7N-source-note.md");
+        let before = read_note(&file_path).unwrap();
+        let original_modified = before.note.modified();
+
+        // Small delay to ensure timestamp would differ
+        std::thread::sleep(std::time::Duration::from_millis(10));
+
+        // Second call should be no-op
+        let result = handle_link(&args, dir.path());
+        assert!(result.is_ok());
+
+        let after = read_note(&file_path).unwrap();
+        // Timestamp should not change since no actual change
+        assert_eq!(after.note.modified(), original_modified);
+        assert_eq!(after.note.links().len(), 1);
+    }
+
+    #[test]
+    fn handle_link_same_target_merges_rels() {
+        let dir = setup_two_notes();
+
+        // First call: add parent rel
+        let args1 = test_link_args("Source Note", "Target Note", vec!["parent"]);
+        handle_link(&args1, dir.path()).unwrap();
+
+        // Second call: add see-also rel to same target
+        let args2 = test_link_args("Source Note", "Target Note", vec!["see-also"]);
+        handle_link(&args2, dir.path()).unwrap();
+
+        let file_path = dir.path().join("01HQ3K5M7N-source-note.md");
+        let parsed = read_note(&file_path).unwrap();
+
+        // Should have one link with merged rels
+        assert_eq!(parsed.note.links().len(), 1);
+        assert_eq!(parsed.note.links()[0].rel().len(), 2);
+        let rels: Vec<&str> = parsed.note.links()[0]
+            .rel()
+            .iter()
+            .map(|r| r.as_str())
+            .collect();
+        assert!(rels.contains(&"parent"));
+        assert!(rels.contains(&"see-also"));
+    }
+
+    #[test]
+    fn handle_link_same_target_updates_context() {
+        let dir = setup_two_notes();
+
+        // First call: no context
+        let args1 = test_link_args("Source Note", "Target Note", vec!["parent"]);
+        handle_link(&args1, dir.path()).unwrap();
+
+        // Second call: add context
+        let args2 = test_link_args_with_context(
+            "Source Note",
+            "Target Note",
+            vec!["parent"],
+            "New context",
+        );
+        handle_link(&args2, dir.path()).unwrap();
+
+        let file_path = dir.path().join("01HQ3K5M7N-source-note.md");
+        let parsed = read_note(&file_path).unwrap();
+
+        assert_eq!(parsed.note.links().len(), 1);
+        assert_eq!(parsed.note.links()[0].context(), Some("New context"));
+    }
+
+    // ===========================================
+    // Phase 6: Timestamp & Index Tests
+    // ===========================================
+
+    #[test]
+    fn handle_link_updates_modified_timestamp() {
+        let dir = setup_two_notes();
+        let file_path = dir.path().join("01HQ3K5M7N-source-note.md");
+        let before = read_note(&file_path).unwrap();
+        let original_modified = before.note.modified();
+
+        std::thread::sleep(std::time::Duration::from_millis(10));
+
+        let args = test_link_args("Source Note", "Target Note", vec!["parent"]);
+        handle_link(&args, dir.path()).unwrap();
+
+        let after = read_note(&file_path).unwrap();
+        assert!(after.note.modified() > original_modified);
+    }
+
+    #[test]
+    fn handle_link_noop_preserves_timestamp() {
+        let dir = setup_two_notes();
+        let args = test_link_args("Source Note", "Target Note", vec!["parent"]);
+
+        // First call
+        handle_link(&args, dir.path()).unwrap();
+
+        let file_path = dir.path().join("01HQ3K5M7N-source-note.md");
+        let before = read_note(&file_path).unwrap();
+        let original_modified = before.note.modified();
+
+        std::thread::sleep(std::time::Duration::from_millis(10));
+
+        // Second call (no-op)
+        handle_link(&args, dir.path()).unwrap();
+
+        let after = read_note(&file_path).unwrap();
+        // Timestamp should NOT change
+        assert_eq!(after.note.modified(), original_modified);
+    }
+
+    #[test]
+    fn handle_link_updates_index() {
+        let dir = setup_two_notes();
+        let args = test_link_args("Source Note", "Target Note", vec!["parent"]);
+        handle_link(&args, dir.path()).unwrap();
+
+        // Verify index was updated by checking backlinks query works
+        let db_path = dir.path().join(".index/notes.db");
+        let index = SqliteIndex::open(&db_path).unwrap();
+
+        let target_id: NoteId = "01HQ4A2R9PXJK4QZPW8V2R6T9B".parse().unwrap();
+        let backlinks = index.backlinks(&target_id, None).unwrap();
+        assert_eq!(backlinks.len(), 1);
+        assert_eq!(backlinks[0].title(), "Source Note");
+    }
+
+    // ===========================================
+    // Phase 7: Edge Cases
+    // ===========================================
+
+    #[test]
+    fn handle_link_self_link_allowed() {
+        let dir = setup_two_notes();
+        let args = test_link_args("Source Note", "Source Note", vec!["self-reference"]);
+        let result = handle_link(&args, dir.path());
+        assert!(result.is_ok());
+
+        let file_path = dir.path().join("01HQ3K5M7N-source-note.md");
+        let parsed = read_note(&file_path).unwrap();
+        assert_eq!(parsed.note.links().len(), 1);
+        // Target should be source's own ID
+        assert_eq!(
+            parsed.note.links()[0].target().to_string(),
+            "01HQ3K5M7NXJK4QZPW8V2R6T9A"
+        );
+    }
+
+    #[test]
+    fn handle_link_preserves_body_content() {
+        let dir = setup_two_notes();
+        let file_path = dir.path().join("01HQ3K5M7N-source-note.md");
+        let before = read_note(&file_path).unwrap();
+        let original_body = before.body.clone();
+
+        let args = test_link_args("Source Note", "Target Note", vec!["parent"]);
+        handle_link(&args, dir.path()).unwrap();
+
+        let after = read_note(&file_path).unwrap();
+        assert_eq!(after.body, original_body);
+    }
+}
