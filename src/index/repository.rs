@@ -24,6 +24,14 @@ pub enum IndexError {
     /// The query is invalid.
     #[error("invalid query: {0}")]
     InvalidQuery(String),
+
+    /// An I/O error occurred.
+    #[error("I/O error at {path}: {source}")]
+    Io {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
 }
 
 /// Result type for index operations.
