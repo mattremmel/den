@@ -11,7 +11,7 @@ use super::{
     SearchArgs, ShowArgs, TagArgs, TagsArgs, TopicsArgs, UnlinkArgs, UntagArgs,
     config::Config,
     date_filter::DateFilter,
-    output::{NoteListing, Output, OutputFormat, SearchListing},
+    output::{NoteListing, Output, OutputFormat, SearchListing, TagListing, TopicListing},
 };
 use crate::domain::{Note, NoteId, Tag, Topic};
 use crate::index::{
@@ -689,24 +689,237 @@ pub fn handle_edit(args: &EditArgs, notes_dir: &Path, config: &Config) -> Result
     handle_edit_impl(args, notes_dir, &RealEditor(config))
 }
 
-pub fn handle_topics(_args: &TopicsArgs) -> Result<()> {
-    println!("topics: not yet implemented");
+pub fn handle_topics(args: &TopicsArgs, notes_dir: &Path) -> Result<()> {
+    let db_path = index_db_path(notes_dir);
+    let index = SqliteIndex::open(&db_path)
+        .with_context(|| format!("failed to open index at {}", db_path.display()))?;
+
+    let topics = index
+        .all_topics()
+        .with_context(|| "failed to list topics")?;
+
+    match args.format {
+        OutputFormat::Human => {
+            if topics.is_empty() {
+                println!("No topics found.");
+            } else {
+                for t in &topics {
+                    if args.counts {
+                        println!("{} ({}/{})", t.topic(), t.exact_count(), t.total_count());
+                    } else {
+                        println!("{}", t.topic());
+                    }
+                }
+            }
+        }
+        OutputFormat::Json => {
+            let listings: Vec<TopicListing> = topics
+                .iter()
+                .map(|t| TopicListing {
+                    path: t.topic().to_string(),
+                    count: if args.counts {
+                        Some(t.total_count() as usize)
+                    } else {
+                        None
+                    },
+                })
+                .collect();
+            let out = Output::new(listings);
+            println!("{}", serde_json::to_string_pretty(&out)?);
+        }
+        OutputFormat::Paths => {
+            for t in &topics {
+                println!("{}", t.topic());
+            }
+        }
+    }
     Ok(())
 }
 
-pub fn handle_tags(_args: &TagsArgs) -> Result<()> {
-    println!("tags: not yet implemented");
+pub fn handle_tags(args: &TagsArgs, notes_dir: &Path) -> Result<()> {
+    let db_path = index_db_path(notes_dir);
+    let index = SqliteIndex::open(&db_path)
+        .with_context(|| format!("failed to open index at {}", db_path.display()))?;
+
+    let tags = index.all_tags().with_context(|| "failed to list tags")?;
+
+    match args.format {
+        OutputFormat::Human => {
+            if tags.is_empty() {
+                println!("No tags found.");
+            } else {
+                for t in &tags {
+                    if args.counts {
+                        println!("{} ({})", t.tag(), t.count());
+                    } else {
+                        println!("{}", t.tag());
+                    }
+                }
+            }
+        }
+        OutputFormat::Json => {
+            let listings: Vec<TagListing> = tags
+                .iter()
+                .map(|t| TagListing {
+                    name: t.tag().to_string(),
+                    count: if args.counts { Some(t.count() as usize) } else { None },
+                })
+                .collect();
+            let out = Output::new(listings);
+            println!("{}", serde_json::to_string_pretty(&out)?);
+        }
+        OutputFormat::Paths => {
+            for t in &tags {
+                println!("{}", t.tag());
+            }
+        }
+    }
     Ok(())
 }
 
-pub fn handle_tag(_args: &TagArgs) -> Result<()> {
-    println!("tag: not yet implemented");
-    Ok(())
+pub fn handle_tag(args: &TagArgs, notes_dir: &Path) -> Result<()> {
+    // Validate tag first (before any I/O)
+    let tag = Tag::new(&args.tag)
+        .map_err(|e| anyhow::anyhow!("invalid tag '{}': {}", args.tag, e))?;
+
+    let db_path = index_db_path(notes_dir);
+    let index = SqliteIndex::open(&db_path)
+        .with_context(|| format!("failed to open index at {}", db_path.display()))?;
+
+    match resolve_note(&index, &args.note)? {
+        ResolveResult::Unique(indexed_note) => {
+            let file_path = notes_dir.join(indexed_note.path());
+            let parsed = read_note(&file_path)
+                .with_context(|| format!("failed to read note: {}", file_path.display()))?;
+
+            // Idempotency check: if tag already exists, no-op
+            if parsed.note.tags().contains(&tag) {
+                println!("Tag '{}' already present on '{}'", tag, parsed.note.title());
+                return Ok(());
+            }
+
+            // Build updated note with new tag
+            let mut tags = parsed.note.tags().to_vec();
+            tags.push(tag.clone());
+
+            let now = Utc::now();
+            let updated_note = Note::builder(
+                parsed.note.id().clone(),
+                parsed.note.title(),
+                parsed.note.created(),
+                now,
+            )
+            .description(parsed.note.description().map(|s| s.to_string()))
+            .topics(parsed.note.topics().to_vec())
+            .aliases(parsed.note.aliases().to_vec())
+            .tags(tags)
+            .links(parsed.note.links().to_vec())
+            .build()
+            .with_context(|| "failed to rebuild note")?;
+
+            // Write updated note
+            write_note(&file_path, &updated_note, &parsed.body)
+                .with_context(|| "failed to write updated note")?;
+
+            // Update index
+            if let Ok(mut idx) = SqliteIndex::open(&db_path) {
+                let builder = IndexBuilder::new(notes_dir.to_path_buf());
+                let _ = builder.incremental_update(&mut idx);
+            }
+
+            println!(
+                "Added tag '{}' to '{}' [{}]",
+                tag,
+                updated_note.title(),
+                updated_note.id().prefix()
+            );
+            Ok(())
+        }
+        ResolveResult::Ambiguous(notes) => {
+            print_ambiguous_notes(&args.note, &notes);
+            bail!("ambiguous note identifier");
+        }
+        ResolveResult::NotFound => {
+            bail!("note not found: '{}'", args.note);
+        }
+    }
 }
 
-pub fn handle_untag(_args: &UntagArgs) -> Result<()> {
-    println!("untag: not yet implemented");
-    Ok(())
+pub fn handle_untag(args: &UntagArgs, notes_dir: &Path) -> Result<()> {
+    // Validate tag first (before any I/O)
+    let tag = Tag::new(&args.tag)
+        .map_err(|e| anyhow::anyhow!("invalid tag '{}': {}", args.tag, e))?;
+
+    let db_path = index_db_path(notes_dir);
+    let index = SqliteIndex::open(&db_path)
+        .with_context(|| format!("failed to open index at {}", db_path.display()))?;
+
+    match resolve_note(&index, &args.note)? {
+        ResolveResult::Unique(indexed_note) => {
+            let file_path = notes_dir.join(indexed_note.path());
+            let parsed = read_note(&file_path)
+                .with_context(|| format!("failed to read note: {}", file_path.display()))?;
+
+            // Idempotency check: if tag doesn't exist, no-op
+            if !parsed.note.tags().contains(&tag) {
+                println!(
+                    "Tag '{}' not present on '{}'",
+                    tag,
+                    parsed.note.title()
+                );
+                return Ok(());
+            }
+
+            // Build updated note without the tag
+            let tags: Vec<Tag> = parsed
+                .note
+                .tags()
+                .iter()
+                .filter(|t| *t != &tag)
+                .cloned()
+                .collect();
+
+            let now = Utc::now();
+            let updated_note = Note::builder(
+                parsed.note.id().clone(),
+                parsed.note.title(),
+                parsed.note.created(),
+                now,
+            )
+            .description(parsed.note.description().map(|s| s.to_string()))
+            .topics(parsed.note.topics().to_vec())
+            .aliases(parsed.note.aliases().to_vec())
+            .tags(tags)
+            .links(parsed.note.links().to_vec())
+            .build()
+            .with_context(|| "failed to rebuild note")?;
+
+            // Write updated note
+            write_note(&file_path, &updated_note, &parsed.body)
+                .with_context(|| "failed to write updated note")?;
+
+            // Update index
+            if let Ok(mut idx) = SqliteIndex::open(&db_path) {
+                let builder = IndexBuilder::new(notes_dir.to_path_buf());
+                let _ = builder.incremental_update(&mut idx);
+            }
+
+            println!(
+                "Removed tag '{}' from '{}' [{}]",
+                tag,
+                updated_note.title(),
+                updated_note.id().prefix()
+            );
+            Ok(())
+        }
+        ResolveResult::Ambiguous(notes) => {
+            print_ambiguous_notes(&args.note, &notes);
+            bail!("ambiguous note identifier");
+        }
+        ResolveResult::NotFound => {
+            bail!("note not found: '{}'", args.note);
+        }
+    }
 }
 
 pub fn handle_check(_args: &CheckArgs) -> Result<()> {
@@ -1898,6 +2111,700 @@ Note 2
             let file_path = dir.path().join("01HQ3K5M7N-api-design.md");
             let file_note = crate::infra::read_note(&file_path).unwrap();
             assert_eq!(notes[0].modified(), file_note.note.modified());
+        }
+    }
+
+    // ===========================================
+    // handle_tags tests
+    // ===========================================
+
+    mod handle_tags_tests {
+        use super::*;
+        use crate::index::{IndexBuilder, SqliteIndex};
+        use tempfile::TempDir;
+
+        fn setup_empty_index() -> TempDir {
+            let dir = TempDir::new().unwrap();
+            std::fs::create_dir_all(dir.path().join(".index")).unwrap();
+            let db_path = dir.path().join(".index/notes.db");
+            let _ = SqliteIndex::open(&db_path).unwrap();
+            dir
+        }
+
+        fn setup_index_with_tags(tags: &[&str]) -> TempDir {
+            let dir = TempDir::new().unwrap();
+            std::fs::create_dir_all(dir.path().join(".index")).unwrap();
+
+            // Create a note with the specified tags
+            let tags_yaml = tags
+                .iter()
+                .map(|t| format!("  - {}", t))
+                .collect::<Vec<_>>()
+                .join("\n");
+
+            let note = format!(
+                r#"---
+id: 01HQ3K5M7NXJK4QZPW8V2R6T9A
+title: Test Note
+created: 2024-01-15T10:30:00Z
+modified: 2024-01-15T10:30:00Z
+tags:
+{}
+---
+Body
+"#,
+                tags_yaml
+            );
+            std::fs::write(dir.path().join("01HQ3K5M7N-test-note.md"), note).unwrap();
+
+            // Build index
+            let db_path = dir.path().join(".index/notes.db");
+            let mut index = SqliteIndex::open(&db_path).unwrap();
+            IndexBuilder::new(dir.path().to_path_buf())
+                .full_rebuild(&mut index)
+                .unwrap();
+
+            dir
+        }
+
+        #[test]
+        fn handle_tags_empty_index() {
+            let dir = setup_empty_index();
+            let args = TagsArgs {
+                counts: false,
+                format: OutputFormat::Human,
+            };
+            let result = handle_tags(&args, dir.path());
+            assert!(result.is_ok());
+        }
+
+        #[test]
+        fn handle_tags_lists_tags_sorted() {
+            let dir = setup_index_with_tags(&["rust", "draft", "important"]);
+            let args = TagsArgs {
+                counts: false,
+                format: OutputFormat::Human,
+            };
+            let result = handle_tags(&args, dir.path());
+            assert!(result.is_ok());
+        }
+
+        #[test]
+        fn handle_tags_json_output() {
+            let dir = setup_index_with_tags(&["rust", "draft"]);
+            let args = TagsArgs {
+                counts: true,
+                format: OutputFormat::Json,
+            };
+            let result = handle_tags(&args, dir.path());
+            assert!(result.is_ok());
+        }
+
+        #[test]
+        fn handle_tags_fails_with_nonexistent_dir() {
+            let args = TagsArgs {
+                counts: false,
+                format: OutputFormat::Human,
+            };
+            let result = handle_tags(&args, Path::new("/nonexistent/path"));
+            assert!(result.is_err());
+        }
+    }
+
+    // ===========================================
+    // handle_topics tests
+    // ===========================================
+
+    mod handle_topics_tests {
+        use super::*;
+        use crate::index::{IndexBuilder, SqliteIndex};
+        use tempfile::TempDir;
+
+        fn setup_empty_index() -> TempDir {
+            let dir = TempDir::new().unwrap();
+            std::fs::create_dir_all(dir.path().join(".index")).unwrap();
+            let db_path = dir.path().join(".index/notes.db");
+            let _ = SqliteIndex::open(&db_path).unwrap();
+            dir
+        }
+
+        fn setup_index_with_topics(topics: &[&str]) -> TempDir {
+            let dir = TempDir::new().unwrap();
+            std::fs::create_dir_all(dir.path().join(".index")).unwrap();
+
+            let topics_yaml = topics
+                .iter()
+                .map(|t| format!("  - {}", t))
+                .collect::<Vec<_>>()
+                .join("\n");
+
+            let note = format!(
+                r#"---
+id: 01HQ3K5M7NXJK4QZPW8V2R6T9A
+title: Test Note
+created: 2024-01-15T10:30:00Z
+modified: 2024-01-15T10:30:00Z
+topics:
+{}
+---
+Body
+"#,
+                topics_yaml
+            );
+            std::fs::write(dir.path().join("01HQ3K5M7N-test-note.md"), note).unwrap();
+
+            let db_path = dir.path().join(".index/notes.db");
+            let mut index = SqliteIndex::open(&db_path).unwrap();
+            IndexBuilder::new(dir.path().to_path_buf())
+                .full_rebuild(&mut index)
+                .unwrap();
+
+            dir
+        }
+
+        #[test]
+        fn handle_topics_empty_index() {
+            let dir = setup_empty_index();
+            let args = TopicsArgs {
+                counts: false,
+                format: OutputFormat::Human,
+            };
+            let result = handle_topics(&args, dir.path());
+            assert!(result.is_ok());
+        }
+
+        #[test]
+        fn handle_topics_lists_topics_sorted() {
+            let dir = setup_index_with_topics(&["software/rust", "reference", "software"]);
+            let args = TopicsArgs {
+                counts: false,
+                format: OutputFormat::Human,
+            };
+            let result = handle_topics(&args, dir.path());
+            assert!(result.is_ok());
+        }
+
+        #[test]
+        fn handle_topics_with_counts() {
+            let dir = setup_index_with_topics(&["software/rust", "software"]);
+            let args = TopicsArgs {
+                counts: true,
+                format: OutputFormat::Human,
+            };
+            let result = handle_topics(&args, dir.path());
+            assert!(result.is_ok());
+        }
+
+        #[test]
+        fn handle_topics_json_output() {
+            let dir = setup_index_with_topics(&["software/rust"]);
+            let args = TopicsArgs {
+                counts: true,
+                format: OutputFormat::Json,
+            };
+            let result = handle_topics(&args, dir.path());
+            assert!(result.is_ok());
+        }
+
+        #[test]
+        fn handle_topics_fails_with_nonexistent_dir() {
+            let args = TopicsArgs {
+                counts: false,
+                format: OutputFormat::Human,
+            };
+            let result = handle_topics(&args, Path::new("/nonexistent/path"));
+            assert!(result.is_err());
+        }
+    }
+
+    // ===========================================
+    // handle_tag tests
+    // ===========================================
+
+    mod handle_tag_tests {
+        use super::*;
+        use crate::index::{IndexBuilder, SqliteIndex};
+        use crate::infra::read_note;
+        use tempfile::TempDir;
+
+        fn setup_note_without_tags() -> TempDir {
+            let dir = TempDir::new().unwrap();
+            std::fs::create_dir_all(dir.path().join(".index")).unwrap();
+
+            let note = r#"---
+id: 01HQ3K5M7NXJK4QZPW8V2R6T9A
+title: Test Note
+created: 2024-01-15T10:30:00Z
+modified: 2024-01-15T10:30:00Z
+---
+Body content.
+"#;
+            std::fs::write(dir.path().join("01HQ3K5M7N-test-note.md"), note).unwrap();
+
+            let db_path = dir.path().join(".index/notes.db");
+            let mut index = SqliteIndex::open(&db_path).unwrap();
+            IndexBuilder::new(dir.path().to_path_buf())
+                .full_rebuild(&mut index)
+                .unwrap();
+
+            dir
+        }
+
+        fn setup_note_with_tags(tags: &[&str]) -> TempDir {
+            let dir = TempDir::new().unwrap();
+            std::fs::create_dir_all(dir.path().join(".index")).unwrap();
+
+            let tags_yaml = tags
+                .iter()
+                .map(|t| format!("  - {}", t))
+                .collect::<Vec<_>>()
+                .join("\n");
+
+            let note = format!(
+                r#"---
+id: 01HQ3K5M7NXJK4QZPW8V2R6T9A
+title: Test Note
+created: 2024-01-15T10:30:00Z
+modified: 2024-01-15T10:30:00Z
+tags:
+{}
+---
+Body content.
+"#,
+                tags_yaml
+            );
+            std::fs::write(dir.path().join("01HQ3K5M7N-test-note.md"), note).unwrap();
+
+            let db_path = dir.path().join(".index/notes.db");
+            let mut index = SqliteIndex::open(&db_path).unwrap();
+            IndexBuilder::new(dir.path().to_path_buf())
+                .full_rebuild(&mut index)
+                .unwrap();
+
+            dir
+        }
+
+        // Phase 1: Error cases
+
+        #[test]
+        fn handle_tag_note_not_found() {
+            let dir = setup_note_without_tags();
+            let args = TagArgs {
+                note: "nonexistent".to_string(),
+                tag: "draft".to_string(),
+            };
+            let result = handle_tag(&args, dir.path());
+            assert!(result.is_err());
+            assert!(result.unwrap_err().to_string().contains("not found"));
+        }
+
+        #[test]
+        fn handle_tag_invalid_tag() {
+            let dir = setup_note_without_tags();
+            let args = TagArgs {
+                note: "Test Note".to_string(),
+                tag: "has spaces".to_string(),
+            };
+            let result = handle_tag(&args, dir.path());
+            assert!(result.is_err());
+            assert!(result.unwrap_err().to_string().contains("invalid tag"));
+        }
+
+        // Phase 2: Resolution
+
+        #[test]
+        fn handle_tag_by_id_prefix() {
+            let dir = setup_note_without_tags();
+            let args = TagArgs {
+                note: "01HQ3K5M".to_string(),
+                tag: "draft".to_string(),
+            };
+            let result = handle_tag(&args, dir.path());
+            assert!(result.is_ok());
+
+            let file_path = dir.path().join("01HQ3K5M7N-test-note.md");
+            let parsed = read_note(&file_path).unwrap();
+            assert!(parsed.note.tags().iter().any(|t| t.as_str() == "draft"));
+        }
+
+        #[test]
+        fn handle_tag_by_title() {
+            let dir = setup_note_without_tags();
+            let args = TagArgs {
+                note: "Test Note".to_string(),
+                tag: "draft".to_string(),
+            };
+            let result = handle_tag(&args, dir.path());
+            assert!(result.is_ok());
+
+            let file_path = dir.path().join("01HQ3K5M7N-test-note.md");
+            let parsed = read_note(&file_path).unwrap();
+            assert!(parsed.note.tags().iter().any(|t| t.as_str() == "draft"));
+        }
+
+        // Phase 3: Addition
+
+        #[test]
+        fn handle_tag_adds_to_empty() {
+            let dir = setup_note_without_tags();
+            let args = TagArgs {
+                note: "Test Note".to_string(),
+                tag: "draft".to_string(),
+            };
+            let result = handle_tag(&args, dir.path());
+            assert!(result.is_ok());
+
+            let file_path = dir.path().join("01HQ3K5M7N-test-note.md");
+            let parsed = read_note(&file_path).unwrap();
+            assert_eq!(parsed.note.tags().len(), 1);
+            assert_eq!(parsed.note.tags()[0].as_str(), "draft");
+        }
+
+        #[test]
+        fn handle_tag_appends_to_existing() {
+            let dir = setup_note_with_tags(&["existing"]);
+            let args = TagArgs {
+                note: "Test Note".to_string(),
+                tag: "new-tag".to_string(),
+            };
+            let result = handle_tag(&args, dir.path());
+            assert!(result.is_ok());
+
+            let file_path = dir.path().join("01HQ3K5M7N-test-note.md");
+            let parsed = read_note(&file_path).unwrap();
+            assert_eq!(parsed.note.tags().len(), 2);
+            assert!(parsed.note.tags().iter().any(|t| t.as_str() == "existing"));
+            assert!(parsed.note.tags().iter().any(|t| t.as_str() == "new-tag"));
+        }
+
+        #[test]
+        fn handle_tag_normalizes_case() {
+            let dir = setup_note_without_tags();
+            let args = TagArgs {
+                note: "Test Note".to_string(),
+                tag: "DRAFT".to_string(),
+            };
+            let result = handle_tag(&args, dir.path());
+            assert!(result.is_ok());
+
+            let file_path = dir.path().join("01HQ3K5M7N-test-note.md");
+            let parsed = read_note(&file_path).unwrap();
+            assert_eq!(parsed.note.tags()[0].as_str(), "draft");
+        }
+
+        // Phase 4: Idempotency
+
+        #[test]
+        fn handle_tag_idempotent_exact_case() {
+            let dir = setup_note_with_tags(&["draft"]);
+            let args = TagArgs {
+                note: "Test Note".to_string(),
+                tag: "draft".to_string(),
+            };
+            let result = handle_tag(&args, dir.path());
+            assert!(result.is_ok());
+
+            let file_path = dir.path().join("01HQ3K5M7N-test-note.md");
+            let parsed = read_note(&file_path).unwrap();
+            // Should still have only one "draft" tag
+            assert_eq!(parsed.note.tags().len(), 1);
+        }
+
+        #[test]
+        fn handle_tag_idempotent_different_case() {
+            let dir = setup_note_with_tags(&["draft"]);
+            let args = TagArgs {
+                note: "Test Note".to_string(),
+                tag: "DRAFT".to_string(),
+            };
+            let result = handle_tag(&args, dir.path());
+            assert!(result.is_ok());
+
+            let file_path = dir.path().join("01HQ3K5M7N-test-note.md");
+            let parsed = read_note(&file_path).unwrap();
+            // Should still have only one tag (case-insensitive comparison)
+            assert_eq!(parsed.note.tags().len(), 1);
+        }
+
+        // Phase 5: Timestamp
+
+        #[test]
+        fn handle_tag_updates_modified_when_changed() {
+            let dir = setup_note_without_tags();
+            let file_path = dir.path().join("01HQ3K5M7N-test-note.md");
+            let before = read_note(&file_path).unwrap();
+            let original_modified = before.note.modified();
+
+            std::thread::sleep(std::time::Duration::from_millis(10));
+
+            let args = TagArgs {
+                note: "Test Note".to_string(),
+                tag: "draft".to_string(),
+            };
+            handle_tag(&args, dir.path()).unwrap();
+
+            let after = read_note(&file_path).unwrap();
+            assert!(after.note.modified() > original_modified);
+        }
+
+        #[test]
+        fn handle_tag_no_timestamp_change_when_idempotent() {
+            let dir = setup_note_with_tags(&["draft"]);
+            let file_path = dir.path().join("01HQ3K5M7N-test-note.md");
+            let before = read_note(&file_path).unwrap();
+            let original_modified = before.note.modified();
+
+            let args = TagArgs {
+                note: "Test Note".to_string(),
+                tag: "draft".to_string(),
+            };
+            handle_tag(&args, dir.path()).unwrap();
+
+            let after = read_note(&file_path).unwrap();
+            // Timestamp should not change since tag was already present
+            assert_eq!(after.note.modified(), original_modified);
+        }
+    }
+
+    // ===========================================
+    // handle_untag tests
+    // ===========================================
+
+    mod handle_untag_tests {
+        use super::*;
+        use crate::index::{IndexBuilder, SqliteIndex};
+        use crate::infra::read_note;
+        use tempfile::TempDir;
+
+        fn setup_note_with_tags(tags: &[&str]) -> TempDir {
+            let dir = TempDir::new().unwrap();
+            std::fs::create_dir_all(dir.path().join(".index")).unwrap();
+
+            let tags_yaml = tags
+                .iter()
+                .map(|t| format!("  - {}", t))
+                .collect::<Vec<_>>()
+                .join("\n");
+
+            let note = format!(
+                r#"---
+id: 01HQ3K5M7NXJK4QZPW8V2R6T9A
+title: Test Note
+created: 2024-01-15T10:30:00Z
+modified: 2024-01-15T10:30:00Z
+tags:
+{}
+---
+Body content.
+"#,
+                tags_yaml
+            );
+            std::fs::write(dir.path().join("01HQ3K5M7N-test-note.md"), note).unwrap();
+
+            let db_path = dir.path().join(".index/notes.db");
+            let mut index = SqliteIndex::open(&db_path).unwrap();
+            IndexBuilder::new(dir.path().to_path_buf())
+                .full_rebuild(&mut index)
+                .unwrap();
+
+            dir
+        }
+
+        fn setup_note_without_tags() -> TempDir {
+            let dir = TempDir::new().unwrap();
+            std::fs::create_dir_all(dir.path().join(".index")).unwrap();
+
+            let note = r#"---
+id: 01HQ3K5M7NXJK4QZPW8V2R6T9A
+title: Test Note
+created: 2024-01-15T10:30:00Z
+modified: 2024-01-15T10:30:00Z
+---
+Body content.
+"#;
+            std::fs::write(dir.path().join("01HQ3K5M7N-test-note.md"), note).unwrap();
+
+            let db_path = dir.path().join(".index/notes.db");
+            let mut index = SqliteIndex::open(&db_path).unwrap();
+            IndexBuilder::new(dir.path().to_path_buf())
+                .full_rebuild(&mut index)
+                .unwrap();
+
+            dir
+        }
+
+        // Phase 1: Error cases
+
+        #[test]
+        fn handle_untag_note_not_found() {
+            let dir = setup_note_with_tags(&["draft"]);
+            let args = UntagArgs {
+                note: "nonexistent".to_string(),
+                tag: "draft".to_string(),
+            };
+            let result = handle_untag(&args, dir.path());
+            assert!(result.is_err());
+            assert!(result.unwrap_err().to_string().contains("not found"));
+        }
+
+        #[test]
+        fn handle_untag_invalid_tag() {
+            let dir = setup_note_with_tags(&["draft"]);
+            let args = UntagArgs {
+                note: "Test Note".to_string(),
+                tag: "has spaces".to_string(),
+            };
+            let result = handle_untag(&args, dir.path());
+            assert!(result.is_err());
+            assert!(result.unwrap_err().to_string().contains("invalid tag"));
+        }
+
+        // Phase 2: Resolution
+
+        #[test]
+        fn handle_untag_by_id_prefix() {
+            let dir = setup_note_with_tags(&["draft"]);
+            let args = UntagArgs {
+                note: "01HQ3K5M".to_string(),
+                tag: "draft".to_string(),
+            };
+            let result = handle_untag(&args, dir.path());
+            assert!(result.is_ok());
+
+            let file_path = dir.path().join("01HQ3K5M7N-test-note.md");
+            let parsed = read_note(&file_path).unwrap();
+            assert!(parsed.note.tags().is_empty());
+        }
+
+        #[test]
+        fn handle_untag_by_title() {
+            let dir = setup_note_with_tags(&["draft"]);
+            let args = UntagArgs {
+                note: "Test Note".to_string(),
+                tag: "draft".to_string(),
+            };
+            let result = handle_untag(&args, dir.path());
+            assert!(result.is_ok());
+
+            let file_path = dir.path().join("01HQ3K5M7N-test-note.md");
+            let parsed = read_note(&file_path).unwrap();
+            assert!(parsed.note.tags().is_empty());
+        }
+
+        // Phase 3: Removal
+
+        #[test]
+        fn handle_untag_removes_tag() {
+            let dir = setup_note_with_tags(&["draft", "important"]);
+            let args = UntagArgs {
+                note: "Test Note".to_string(),
+                tag: "draft".to_string(),
+            };
+            let result = handle_untag(&args, dir.path());
+            assert!(result.is_ok());
+
+            let file_path = dir.path().join("01HQ3K5M7N-test-note.md");
+            let parsed = read_note(&file_path).unwrap();
+            assert_eq!(parsed.note.tags().len(), 1);
+            assert_eq!(parsed.note.tags()[0].as_str(), "important");
+        }
+
+        #[test]
+        fn handle_untag_removes_last_tag() {
+            let dir = setup_note_with_tags(&["draft"]);
+            let args = UntagArgs {
+                note: "Test Note".to_string(),
+                tag: "draft".to_string(),
+            };
+            let result = handle_untag(&args, dir.path());
+            assert!(result.is_ok());
+
+            let file_path = dir.path().join("01HQ3K5M7N-test-note.md");
+            let parsed = read_note(&file_path).unwrap();
+            assert!(parsed.note.tags().is_empty());
+        }
+
+        #[test]
+        fn handle_untag_case_insensitive() {
+            let dir = setup_note_with_tags(&["draft"]);
+            let args = UntagArgs {
+                note: "Test Note".to_string(),
+                tag: "DRAFT".to_string(),
+            };
+            let result = handle_untag(&args, dir.path());
+            assert!(result.is_ok());
+
+            let file_path = dir.path().join("01HQ3K5M7N-test-note.md");
+            let parsed = read_note(&file_path).unwrap();
+            assert!(parsed.note.tags().is_empty());
+        }
+
+        // Phase 4: Idempotency
+
+        #[test]
+        fn handle_untag_idempotent_tag_not_present() {
+            let dir = setup_note_with_tags(&["important"]);
+            let args = UntagArgs {
+                note: "Test Note".to_string(),
+                tag: "draft".to_string(),
+            };
+            let result = handle_untag(&args, dir.path());
+            assert!(result.is_ok());
+
+            let file_path = dir.path().join("01HQ3K5M7N-test-note.md");
+            let parsed = read_note(&file_path).unwrap();
+            assert_eq!(parsed.note.tags().len(), 1);
+            assert_eq!(parsed.note.tags()[0].as_str(), "important");
+        }
+
+        #[test]
+        fn handle_untag_idempotent_no_tags() {
+            let dir = setup_note_without_tags();
+            let args = UntagArgs {
+                note: "Test Note".to_string(),
+                tag: "draft".to_string(),
+            };
+            let result = handle_untag(&args, dir.path());
+            assert!(result.is_ok());
+        }
+
+        // Phase 5: Timestamp
+
+        #[test]
+        fn handle_untag_updates_modified_when_changed() {
+            let dir = setup_note_with_tags(&["draft"]);
+            let file_path = dir.path().join("01HQ3K5M7N-test-note.md");
+            let before = read_note(&file_path).unwrap();
+            let original_modified = before.note.modified();
+
+            std::thread::sleep(std::time::Duration::from_millis(10));
+
+            let args = UntagArgs {
+                note: "Test Note".to_string(),
+                tag: "draft".to_string(),
+            };
+            handle_untag(&args, dir.path()).unwrap();
+
+            let after = read_note(&file_path).unwrap();
+            assert!(after.note.modified() > original_modified);
+        }
+
+        #[test]
+        fn handle_untag_no_timestamp_change_when_idempotent() {
+            let dir = setup_note_with_tags(&["important"]);
+            let file_path = dir.path().join("01HQ3K5M7N-test-note.md");
+            let before = read_note(&file_path).unwrap();
+            let original_modified = before.note.modified();
+
+            let args = UntagArgs {
+                note: "Test Note".to_string(),
+                tag: "draft".to_string(), // Not present
+            };
+            handle_untag(&args, dir.path()).unwrap();
+
+            let after = read_note(&file_path).unwrap();
+            // Timestamp should not change since tag wasn't present
+            assert_eq!(after.note.modified(), original_modified);
         }
     }
 }
