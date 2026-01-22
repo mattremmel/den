@@ -1,6 +1,7 @@
 //! Frontmatter parser for extracting YAML metadata from markdown files.
 
 use crate::domain::Note;
+use crate::infra::ContentHash;
 use thiserror::Error;
 
 /// Result of parsing a markdown file with frontmatter.
@@ -8,6 +9,7 @@ use thiserror::Error;
 pub struct ParsedNote {
     pub note: Note,
     pub body: String,
+    pub content_hash: ContentHash,
 }
 
 /// Errors during frontmatter parsing.
@@ -39,6 +41,10 @@ pub enum ParseError {
 /// Body content here...
 /// ```
 ///
+/// Note: The content_hash is computed from the string bytes. When reading
+/// files from disk, use `read_note()` which computes the hash from raw
+/// file bytes (before any BOM stripping or encoding conversion).
+///
 /// # Errors
 ///
 /// Returns `ParseError` if:
@@ -47,6 +53,17 @@ pub enum ParseError {
 /// - The YAML between delimiters is invalid
 /// - Required fields are missing or invalid
 pub fn parse(content: &str) -> Result<ParsedNote, ParseError> {
+    let content_hash = ContentHash::compute(content.as_bytes());
+    parse_with_hash(content, content_hash)
+}
+
+/// Internal: parses content with a pre-computed content hash.
+///
+/// Used by `read_note()` to provide a hash computed from raw file bytes.
+pub(crate) fn parse_with_hash(
+    content: &str,
+    content_hash: ContentHash,
+) -> Result<ParsedNote, ParseError> {
     // Check for opening delimiter - must be at the very start
     if !content.starts_with("---") {
         return Err(ParseError::MissingOpeningDelimiter);
@@ -92,7 +109,11 @@ pub fn parse(content: &str) -> Result<ParsedNote, ParseError> {
     // Parse the YAML
     let note: Note = serde_yaml::from_str(yaml_content)?;
 
-    Ok(ParsedNote { note, body })
+    Ok(ParsedNote {
+        note,
+        body,
+        content_hash,
+    })
 }
 
 /// Serializes a Note and body to markdown with YAML frontmatter.

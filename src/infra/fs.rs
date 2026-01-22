@@ -1,7 +1,8 @@
 //! File I/O operations for notes with atomic writes.
 
 use crate::domain::Note;
-use crate::infra::frontmatter::{ParseError, ParsedNote, parse, serialize};
+use crate::infra::content_hash::ContentHash;
+use crate::infra::frontmatter::{ParseError, ParsedNote, parse_with_hash, serialize};
 use std::io::{self, Write as IoWrite};
 use std::path::{Path, PathBuf};
 use tempfile::NamedTempFile;
@@ -73,6 +74,9 @@ impl FsError {
 pub fn read_note(path: &Path) -> Result<ParsedNote, FsError> {
     let bytes = std::fs::read(path).map_err(|e| FsError::from_io(path, e))?;
 
+    // Compute hash from raw bytes BEFORE any BOM stripping or encoding conversion
+    let content_hash = ContentHash::compute(&bytes);
+
     // Check for non-UTF-8 BOMs
     if bytes.starts_with(&[0xFF, 0xFE]) {
         return Err(FsError::InvalidEncoding {
@@ -110,7 +114,7 @@ pub fn read_note(path: &Path) -> Result<ParsedNote, FsError> {
         });
     }
 
-    parse(content).map_err(|e| FsError::Parse {
+    parse_with_hash(content, content_hash).map_err(|e| FsError::Parse {
         path: path.into(),
         source: e,
     })
@@ -1079,5 +1083,184 @@ modified: 2024-01-15T10:30:00Z
         let parsed = read_note(&path).unwrap();
 
         assert_eq!(parsed.body, body);
+    }
+
+    // ===========================================
+    // Content Hash Integration Tests
+    // ===========================================
+
+    // --- Phase 2: Integration with read_note() ---
+
+    // Cycle 2.1: ParsedNote Includes Hash
+    #[test]
+    fn read_note_returns_content_hash() {
+        let dir = TempDir::new().unwrap();
+        let path = create_test_file(&dir, &minimal_frontmatter());
+
+        let result = read_note(&path).unwrap();
+
+        assert_eq!(result.content_hash.as_str().len(), 64);
+    }
+
+    // Cycle 2.2: Same Content = Same Hash
+    #[test]
+    fn read_note_same_content_same_hash() {
+        let dir = TempDir::new().unwrap();
+        let content = minimal_frontmatter();
+        let path1 = dir.path().join("note1.md");
+        let path2 = dir.path().join("note2.md");
+        fs::write(&path1, &content).unwrap();
+        fs::write(&path2, &content).unwrap();
+
+        let result1 = read_note(&path1).unwrap();
+        let result2 = read_note(&path2).unwrap();
+
+        assert_eq!(result1.content_hash, result2.content_hash);
+    }
+
+    // Cycle 2.3: Different Content = Different Hash
+    #[test]
+    fn read_note_different_content_different_hash() {
+        let dir = TempDir::new().unwrap();
+        let path1 = create_test_file(&dir, &minimal_frontmatter());
+        let path2 = dir.path().join("note2.md");
+        let modified_content = r#"---
+id: 01HQ3K5M7NXJK4QZPW8V2R6T9Y
+title: Different Title
+created: 2024-01-15T10:30:00Z
+modified: 2024-01-15T10:30:00Z
+---
+Body content."#;
+        fs::write(&path2, modified_content).unwrap();
+
+        let result1 = read_note(&path1).unwrap();
+        let result2 = read_note(&path2).unwrap();
+
+        assert_ne!(result1.content_hash, result2.content_hash);
+    }
+
+    // Cycle 2.4: Hash Captures BOM Differences
+    #[test]
+    fn read_note_hash_differs_with_utf8_bom() {
+        let dir = TempDir::new().unwrap();
+        let content = minimal_frontmatter();
+
+        // File without BOM
+        let path_no_bom = dir.path().join("no-bom.md");
+        fs::write(&path_no_bom, &content).unwrap();
+
+        // File with UTF-8 BOM
+        let path_with_bom = dir.path().join("with-bom.md");
+        let content_with_bom = format!("\u{FEFF}{}", content);
+        fs::write(&path_with_bom, &content_with_bom).unwrap();
+
+        let result_no_bom = read_note(&path_no_bom).unwrap();
+        let result_with_bom = read_note(&path_with_bom).unwrap();
+
+        // Same parsed Note
+        assert_eq!(result_no_bom.note.title(), result_with_bom.note.title());
+
+        // Different hash (BOM is included in raw bytes)
+        assert_ne!(result_no_bom.content_hash, result_with_bom.content_hash);
+    }
+
+    // Cycle 2.5: Hash Captures Line Ending Differences
+    #[test]
+    fn read_note_hash_differs_with_crlf_vs_lf() {
+        let dir = TempDir::new().unwrap();
+
+        // LF endings
+        let content_lf = "---\nid: 01HQ3K5M7NXJK4QZPW8V2R6T9Y\ntitle: Test Note\ncreated: 2024-01-15T10:30:00Z\nmodified: 2024-01-15T10:30:00Z\n---\nBody";
+        let path_lf = dir.path().join("lf.md");
+        fs::write(&path_lf, content_lf).unwrap();
+
+        // CRLF endings
+        let content_crlf = "---\r\nid: 01HQ3K5M7NXJK4QZPW8V2R6T9Y\r\ntitle: Test Note\r\ncreated: 2024-01-15T10:30:00Z\r\nmodified: 2024-01-15T10:30:00Z\r\n---\r\nBody";
+        let path_crlf = dir.path().join("crlf.md");
+        fs::write(&path_crlf, content_crlf).unwrap();
+
+        let result_lf = read_note(&path_lf).unwrap();
+        let result_crlf = read_note(&path_crlf).unwrap();
+
+        // Same parsed Note
+        assert_eq!(result_lf.note.title(), result_crlf.note.title());
+
+        // Different hash (line endings differ)
+        assert_ne!(result_lf.content_hash, result_crlf.content_hash);
+    }
+
+    // Cycle 2.6: Hash Captures Whitespace Changes
+    #[test]
+    fn read_note_hash_detects_trailing_whitespace_change() {
+        let dir = TempDir::new().unwrap();
+
+        // Without trailing space
+        let content1 = "---\nid: 01HQ3K5M7NXJK4QZPW8V2R6T9Y\ntitle: Test Note\ncreated: 2024-01-15T10:30:00Z\nmodified: 2024-01-15T10:30:00Z\n---\nBody";
+        let path1 = dir.path().join("no-trailing.md");
+        fs::write(&path1, content1).unwrap();
+
+        // With trailing spaces on body line
+        let content2 = "---\nid: 01HQ3K5M7NXJK4QZPW8V2R6T9Y\ntitle: Test Note\ncreated: 2024-01-15T10:30:00Z\nmodified: 2024-01-15T10:30:00Z\n---\nBody   ";
+        let path2 = dir.path().join("trailing.md");
+        fs::write(&path2, content2).unwrap();
+
+        let result1 = read_note(&path1).unwrap();
+        let result2 = read_note(&path2).unwrap();
+
+        // Different hash (trailing whitespace changes raw bytes)
+        assert_ne!(result1.content_hash, result2.content_hash);
+    }
+
+    // --- Phase 3: Edge Cases ---
+
+    // Cycle 3.1: Large File
+    #[test]
+    fn read_note_hashes_large_file() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("large.md");
+
+        // Create a 1MB body
+        let large_body = "x".repeat(1024 * 1024);
+        let content = format!(
+            r#"---
+id: 01HQ3K5M7NXJK4QZPW8V2R6T9Y
+title: Large Note
+created: 2024-01-15T10:30:00Z
+modified: 2024-01-15T10:30:00Z
+---
+{}"#,
+            large_body
+        );
+        fs::write(&path, &content).unwrap();
+
+        let result = read_note(&path).unwrap();
+
+        // Hash is computed and is valid
+        assert_eq!(result.content_hash.as_str().len(), 64);
+        assert!(
+            result
+                .content_hash
+                .as_str()
+                .chars()
+                .all(|c| c.is_ascii_hexdigit())
+        );
+    }
+
+    // Cycle 3.2: Hash Stability
+    #[test]
+    fn read_note_hash_stable_across_multiple_reads() {
+        let dir = TempDir::new().unwrap();
+        let path = create_test_file(&dir, &minimal_frontmatter());
+
+        // Read the same file 10 times
+        let hashes: Vec<_> = (0..10)
+            .map(|_| read_note(&path).unwrap().content_hash)
+            .collect();
+
+        // All hashes should be identical
+        let first = &hashes[0];
+        for hash in &hashes[1..] {
+            assert_eq!(first, hash);
+        }
     }
 }
