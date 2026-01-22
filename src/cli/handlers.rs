@@ -926,9 +926,80 @@ pub fn handle_check(_args: &CheckArgs) -> Result<()> {
     Ok(())
 }
 
-pub fn handle_backlinks(_args: &BacklinksArgs) -> Result<()> {
-    println!("backlinks: not yet implemented");
-    Ok(())
+pub fn handle_backlinks(args: &BacklinksArgs, notes_dir: &Path) -> Result<()> {
+    let db_path = index_db_path(notes_dir);
+    let index = SqliteIndex::open(&db_path)
+        .with_context(|| format!("failed to open index at {}", db_path.display()))?;
+
+    match resolve_note(&index, &args.note)? {
+        ResolveResult::Unique(note) => {
+            // Parse optional rel filter
+            let rel = match &args.rel {
+                Some(rel_str) => Some(crate::domain::Rel::new(rel_str).map_err(|e| {
+                    anyhow::anyhow!("invalid relationship type '{}': {}", rel_str, e)
+                })?),
+                None => None,
+            };
+
+            let mut backlinks = index
+                .backlinks(note.id(), rel.as_ref())
+                .with_context(|| "failed to query backlinks")?;
+
+            // Sort by modified date, most recent first
+            backlinks.sort_by_key(|n| std::cmp::Reverse(n.modified()));
+
+            match args.format {
+                OutputFormat::Human => {
+                    if backlinks.is_empty() {
+                        println!("No backlinks found.");
+                    } else {
+                        println!("{:<10}  {:<50}  {:>10}", "ID", "Title", "Modified");
+                        println!(
+                            "{:<10}  {:<50}  {:>10}",
+                            "----------",
+                            "--------------------------------------------------",
+                            "----------"
+                        );
+
+                        for backlink in &backlinks {
+                            let id_short = backlink.id().prefix();
+                            let title = truncate_str(backlink.title(), 50);
+                            let modified = backlink.modified().format("%Y-%m-%d").to_string();
+                            println!("{:<10}  {:<50}  {:>10}", id_short, title, modified);
+                        }
+
+                        println!();
+                        println!("{} backlink(s)", backlinks.len());
+                    }
+                }
+                OutputFormat::Json => {
+                    let listings: Vec<NoteListing> = backlinks
+                        .iter()
+                        .map(|n| NoteListing {
+                            id: n.id().to_string(),
+                            title: n.title().to_string(),
+                            path: n.path().to_string_lossy().to_string(),
+                        })
+                        .collect();
+                    let output = Output::new(listings);
+                    println!("{}", serde_json::to_string_pretty(&output)?);
+                }
+                OutputFormat::Paths => {
+                    for backlink in &backlinks {
+                        println!("{}", notes_dir.join(backlink.path()).display());
+                    }
+                }
+            }
+            Ok(())
+        }
+        ResolveResult::Ambiguous(notes) => {
+            print_ambiguous_notes(&args.note, &notes);
+            bail!("ambiguous note identifier");
+        }
+        ResolveResult::NotFound => {
+            bail!("note not found: '{}'", args.note);
+        }
+    }
 }
 
 pub fn handle_link(_args: &LinkArgs) -> Result<()> {
@@ -2797,6 +2868,471 @@ Body content.
             let after = read_note(&file_path).unwrap();
             // Timestamp should not change since tag wasn't present
             assert_eq!(after.note.modified(), original_modified);
+        }
+    }
+
+    // ===========================================
+    // handle_backlinks tests
+    // ===========================================
+
+    mod handle_backlinks_tests {
+        use super::*;
+        use crate::domain::Note;
+        use crate::index::SqliteIndex;
+        use tempfile::TempDir;
+
+        fn setup_empty_index() -> TempDir {
+            let dir = TempDir::new().unwrap();
+            std::fs::create_dir_all(dir.path().join(".index")).unwrap();
+            let db_path = dir.path().join(".index/notes.db");
+            let _ = SqliteIndex::open(&db_path).unwrap();
+            dir
+        }
+
+        fn setup_index_with_target_note() -> TempDir {
+            let dir = TempDir::new().unwrap();
+            std::fs::create_dir_all(dir.path().join(".index")).unwrap();
+            let db_path = dir.path().join(".index/notes.db");
+            let mut index = SqliteIndex::open(&db_path).unwrap();
+
+            // Create target note
+            let target_note = Note::new(
+                "01HQ5B3S0QYJK5RZQX9W3S7T0A".parse().unwrap(),
+                "Target Note",
+                test_datetime(),
+                test_datetime(),
+            )
+            .unwrap();
+            index
+                .upsert_note(
+                    &target_note,
+                    &test_content_hash(),
+                    std::path::Path::new("01HQ5B3S0Q-target-note.md"),
+                )
+                .unwrap();
+
+            dir
+        }
+
+        fn setup_index_with_backlinks() -> TempDir {
+            let dir = TempDir::new().unwrap();
+            std::fs::create_dir_all(dir.path().join(".index")).unwrap();
+            let db_path = dir.path().join(".index/notes.db");
+            let mut index = SqliteIndex::open(&db_path).unwrap();
+
+            // Create target note
+            let target_id: NoteId = "01HQ5B3S0QYJK5RZQX9W3S7T0A".parse().unwrap();
+            let target_note = Note::new(
+                target_id.clone(),
+                "Target Note",
+                test_datetime(),
+                test_datetime(),
+            )
+            .unwrap();
+            index
+                .upsert_note(
+                    &target_note,
+                    &test_content_hash(),
+                    std::path::Path::new("01HQ5B3S0Q-target-note.md"),
+                )
+                .unwrap();
+
+            // Create source note that links to target
+            let source_id: NoteId = "01HQ3K5M7NXJK4QZPW8V2R6T9A".parse().unwrap();
+            let source_note = Note::new(
+                source_id.clone(),
+                "Source Note",
+                test_datetime(),
+                test_datetime(),
+            )
+            .unwrap();
+            index
+                .upsert_note(
+                    &source_note,
+                    &test_content_hash(),
+                    std::path::Path::new("01HQ3K5M7N-source-note.md"),
+                )
+                .unwrap();
+
+            // Insert link from source to target
+            insert_link(&index, &source_id, &target_id, &["parent"]);
+
+            dir
+        }
+
+        fn setup_index_with_multiple_backlinks() -> TempDir {
+            let dir = TempDir::new().unwrap();
+            std::fs::create_dir_all(dir.path().join(".index")).unwrap();
+            let db_path = dir.path().join(".index/notes.db");
+            let mut index = SqliteIndex::open(&db_path).unwrap();
+
+            // Create target note
+            let target_id: NoteId = "01HQ5B3S0QYJK5RZQX9W3S7T0A".parse().unwrap();
+            let target_note = Note::new(
+                target_id.clone(),
+                "Target Note",
+                test_datetime(),
+                test_datetime(),
+            )
+            .unwrap();
+            index
+                .upsert_note(
+                    &target_note,
+                    &test_content_hash(),
+                    std::path::Path::new("01HQ5B3S0Q-target-note.md"),
+                )
+                .unwrap();
+
+            // Create source notes with different modified times
+            let source1_id: NoteId = "01HQ3K5M7NXJK4QZPW8V2R6T9A".parse().unwrap();
+            let source1_note = Note::new(
+                source1_id.clone(),
+                "Source Note A",
+                test_datetime(),
+                DateTime::parse_from_rfc3339("2024-01-15T10:30:00Z")
+                    .unwrap()
+                    .with_timezone(&Utc),
+            )
+            .unwrap();
+            index
+                .upsert_note(
+                    &source1_note,
+                    &test_content_hash(),
+                    std::path::Path::new("01HQ3K5M7N-source-a.md"),
+                )
+                .unwrap();
+
+            let source2_id: NoteId = "01HQ4A2R9PXJK4QZPW8V2R6T9B".parse().unwrap();
+            let source2_note = Note::new(
+                source2_id.clone(),
+                "Source Note B",
+                test_datetime(),
+                DateTime::parse_from_rfc3339("2024-01-16T10:30:00Z")
+                    .unwrap()
+                    .with_timezone(&Utc),
+            )
+            .unwrap();
+            index
+                .upsert_note(
+                    &source2_note,
+                    &test_content_hash(),
+                    std::path::Path::new("01HQ4A2R9P-source-b.md"),
+                )
+                .unwrap();
+
+            let source3_id: NoteId = "01HQ6C4T1RXJK6SZRY0X4T81CC".parse().unwrap();
+            let source3_note = Note::new(
+                source3_id.clone(),
+                "Source Note C",
+                test_datetime(),
+                DateTime::parse_from_rfc3339("2024-01-14T10:30:00Z")
+                    .unwrap()
+                    .with_timezone(&Utc),
+            )
+            .unwrap();
+            index
+                .upsert_note(
+                    &source3_note,
+                    &test_content_hash(),
+                    std::path::Path::new("01HQ6C4T1R-source-c.md"),
+                )
+                .unwrap();
+
+            // Insert links from all sources to target with different rels
+            insert_link(&index, &source1_id, &target_id, &["parent"]);
+            insert_link(&index, &source2_id, &target_id, &["see-also"]);
+            insert_link(&index, &source3_id, &target_id, &["parent"]);
+
+            dir
+        }
+
+        fn setup_index_with_alias() -> TempDir {
+            let dir = TempDir::new().unwrap();
+            std::fs::create_dir_all(dir.path().join(".index")).unwrap();
+            let db_path = dir.path().join(".index/notes.db");
+            let mut index = SqliteIndex::open(&db_path).unwrap();
+
+            // Create target note with alias
+            let target_id: NoteId = "01HQ5B3S0QYJK5RZQX9W3S7T0A".parse().unwrap();
+            let target_note = Note::builder(
+                target_id.clone(),
+                "Target Note",
+                test_datetime(),
+                test_datetime(),
+            )
+            .aliases(vec!["REST".to_string()])
+            .build()
+            .unwrap();
+            index
+                .upsert_note(
+                    &target_note,
+                    &test_content_hash(),
+                    std::path::Path::new("01HQ5B3S0Q-target-note.md"),
+                )
+                .unwrap();
+
+            // Create source note that links to target
+            let source_id: NoteId = "01HQ3K5M7NXJK4QZPW8V2R6T9A".parse().unwrap();
+            let source_note = Note::new(
+                source_id.clone(),
+                "Source Note",
+                test_datetime(),
+                test_datetime(),
+            )
+            .unwrap();
+            index
+                .upsert_note(
+                    &source_note,
+                    &test_content_hash(),
+                    std::path::Path::new("01HQ3K5M7N-source-note.md"),
+                )
+                .unwrap();
+
+            // Insert link
+            insert_link(&index, &source_id, &target_id, &["parent"]);
+
+            dir
+        }
+
+        fn insert_link(index: &SqliteIndex, source_id: &NoteId, target_id: &NoteId, rels: &[&str]) {
+            let link_id: i64 = index
+                .conn()
+                .query_row(
+                    "INSERT INTO links (source_id, target_id) VALUES (?, ?) RETURNING id",
+                    [source_id.to_string(), target_id.to_string()],
+                    |row| row.get(0),
+                )
+                .unwrap();
+
+            for rel in rels {
+                index
+                    .conn()
+                    .execute(
+                        "INSERT INTO link_rels (link_id, rel) VALUES (?, ?)",
+                        rusqlite::params![link_id, rel],
+                    )
+                    .unwrap();
+            }
+        }
+
+        // Phase 1: Note Resolution Tests
+
+        #[test]
+        fn backlinks_note_not_found_returns_error() {
+            let dir = setup_empty_index();
+            let args = BacklinksArgs {
+                note: "nonexistent".to_string(),
+                rel: None,
+                format: OutputFormat::Human,
+            };
+            let result = handle_backlinks(&args, dir.path());
+            assert!(result.is_err());
+            let err = result.unwrap_err().to_string();
+            assert!(err.contains("note not found"));
+            assert!(err.contains("nonexistent"));
+        }
+
+        #[test]
+        fn backlinks_ambiguous_note_returns_error() {
+            // Setup index with ambiguous ID prefix
+            let dir = TempDir::new().unwrap();
+            std::fs::create_dir_all(dir.path().join(".index")).unwrap();
+            let db_path = dir.path().join(".index/notes.db");
+            let mut index = SqliteIndex::open(&db_path).unwrap();
+
+            // Create two notes with same ID prefix
+            let note1 = Note::new(
+                "01HQ3K5M7NXJK4QZPW8V2R6T9A".parse().unwrap(),
+                "Note A",
+                test_datetime(),
+                test_datetime(),
+            )
+            .unwrap();
+            let note2 = Note::new(
+                "01HQ3K5M7NXJK4QZPW8V2R6T9B".parse().unwrap(),
+                "Note B",
+                test_datetime(),
+                test_datetime(),
+            )
+            .unwrap();
+            index
+                .upsert_note(
+                    &note1,
+                    &test_content_hash(),
+                    std::path::Path::new("01HQ3K5M7N-note-a.md"),
+                )
+                .unwrap();
+            index
+                .upsert_note(
+                    &note2,
+                    &test_content_hash(),
+                    std::path::Path::new("01HQ3K5M7N-note-b.md"),
+                )
+                .unwrap();
+
+            let args = BacklinksArgs {
+                note: "01HQ3K5M7N".to_string(),
+                rel: None,
+                format: OutputFormat::Human,
+            };
+            let result = handle_backlinks(&args, dir.path());
+            assert!(result.is_err());
+            let err = result.unwrap_err().to_string();
+            assert!(err.contains("ambiguous"));
+        }
+
+        // Phase 2: Core Backlinks Query Tests
+
+        #[test]
+        fn backlinks_returns_empty_for_note_with_no_backlinks() {
+            let dir = setup_index_with_target_note();
+            let args = BacklinksArgs {
+                note: "Target Note".to_string(),
+                rel: None,
+                format: OutputFormat::Human,
+            };
+            let result = handle_backlinks(&args, dir.path());
+            assert!(result.is_ok());
+        }
+
+        #[test]
+        fn backlinks_returns_linking_notes() {
+            let dir = setup_index_with_backlinks();
+            let args = BacklinksArgs {
+                note: "Target Note".to_string(),
+                rel: None,
+                format: OutputFormat::Human,
+            };
+            let result = handle_backlinks(&args, dir.path());
+            assert!(result.is_ok());
+        }
+
+        #[test]
+        fn backlinks_returns_multiple_linking_notes() {
+            let dir = setup_index_with_multiple_backlinks();
+            let args = BacklinksArgs {
+                note: "Target Note".to_string(),
+                rel: None,
+                format: OutputFormat::Human,
+            };
+            let result = handle_backlinks(&args, dir.path());
+            assert!(result.is_ok());
+        }
+
+        // Phase 3: Rel Filter Tests
+
+        #[test]
+        fn backlinks_with_rel_filter_returns_matching_only() {
+            let dir = setup_index_with_multiple_backlinks();
+            let args = BacklinksArgs {
+                note: "Target Note".to_string(),
+                rel: Some("parent".to_string()),
+                format: OutputFormat::Human,
+            };
+            let result = handle_backlinks(&args, dir.path());
+            assert!(result.is_ok());
+        }
+
+        #[test]
+        fn backlinks_with_invalid_rel_returns_error() {
+            let dir = setup_index_with_target_note();
+            let args = BacklinksArgs {
+                note: "Target Note".to_string(),
+                rel: Some("invalid_rel".to_string()), // underscore is invalid
+                format: OutputFormat::Human,
+            };
+            let result = handle_backlinks(&args, dir.path());
+            assert!(result.is_err());
+            let err = result.unwrap_err().to_string();
+            assert!(err.contains("invalid relationship type"));
+        }
+
+        #[test]
+        fn backlinks_with_rel_filter_no_matches_returns_empty() {
+            let dir = setup_index_with_backlinks();
+            let args = BacklinksArgs {
+                note: "Target Note".to_string(),
+                rel: Some("see-also".to_string()), // link is "parent" only
+                format: OutputFormat::Human,
+            };
+            let result = handle_backlinks(&args, dir.path());
+            assert!(result.is_ok());
+        }
+
+        // Phase 4: Output Formatting Tests
+
+        #[test]
+        fn backlinks_human_format_returns_ok() {
+            let dir = setup_index_with_backlinks();
+            let args = BacklinksArgs {
+                note: "Target Note".to_string(),
+                rel: None,
+                format: OutputFormat::Human,
+            };
+            let result = handle_backlinks(&args, dir.path());
+            assert!(result.is_ok());
+        }
+
+        #[test]
+        fn backlinks_json_format_returns_ok() {
+            let dir = setup_index_with_backlinks();
+            let args = BacklinksArgs {
+                note: "Target Note".to_string(),
+                rel: None,
+                format: OutputFormat::Json,
+            };
+            let result = handle_backlinks(&args, dir.path());
+            assert!(result.is_ok());
+        }
+
+        #[test]
+        fn backlinks_paths_format_returns_ok() {
+            let dir = setup_index_with_backlinks();
+            let args = BacklinksArgs {
+                note: "Target Note".to_string(),
+                rel: None,
+                format: OutputFormat::Paths,
+            };
+            let result = handle_backlinks(&args, dir.path());
+            assert!(result.is_ok());
+        }
+
+        // Phase 5: Edge Cases
+
+        #[test]
+        fn backlinks_resolves_by_id_prefix() {
+            let dir = setup_index_with_backlinks();
+            let args = BacklinksArgs {
+                note: "01HQ5B3S".to_string(), // 8-char prefix
+                rel: None,
+                format: OutputFormat::Human,
+            };
+            let result = handle_backlinks(&args, dir.path());
+            assert!(result.is_ok());
+        }
+
+        #[test]
+        fn backlinks_resolves_by_alias() {
+            let dir = setup_index_with_alias();
+            let args = BacklinksArgs {
+                note: "REST".to_string(),
+                rel: None,
+                format: OutputFormat::Human,
+            };
+            let result = handle_backlinks(&args, dir.path());
+            assert!(result.is_ok());
+        }
+
+        #[test]
+        fn backlinks_resolves_by_alias_case_insensitive() {
+            let dir = setup_index_with_alias();
+            let args = BacklinksArgs {
+                note: "rest".to_string(),
+                rel: None,
+                format: OutputFormat::Human,
+            };
+            let result = handle_backlinks(&args, dir.path());
+            assert!(result.is_ok());
         }
     }
 }
