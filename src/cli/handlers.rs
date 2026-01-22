@@ -534,7 +534,7 @@ pub fn resolve_note<R: IndexRepository>(index: &R, identifier: &str) -> Result<R
     candidates.extend(alias_matches);
 
     // Deduplicate by ID
-    candidates.sort_by(|a, b| a.id().to_string().cmp(&b.id().to_string()));
+    candidates.sort_by_key(|a| a.id().to_string());
     candidates.dedup_by(|a, b| a.id() == b.id());
 
     match candidates.len() {
