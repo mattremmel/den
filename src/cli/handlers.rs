@@ -153,17 +153,17 @@ pub fn handle_list(args: &ListArgs, notes_dir: &Path) -> Result<()> {
             if notes.is_empty() {
                 println!("No notes found.");
             } else {
-                println!("{:<8}  {:<50}  {:>10}", "ID", "Title", "Modified");
+                println!("{:<10}  {:<50}  {:>10}", "ID", "Title", "Modified");
                 println!(
-                    "{:<8}  {:<50}  {:>10}",
-                    "--------", "--------------------------------------------------", "----------"
+                    "{:<10}  {:<50}  {:>10}",
+                    "----------", "--------------------------------------------------", "----------"
                 );
 
                 for note in &notes {
-                    let id_short = &note.id().to_string()[..8];
+                    let id_short = note.id().prefix();
                     let title = truncate_str(note.title(), 50);
                     let modified = note.modified().format("%Y-%m-%d").to_string();
-                    println!("{:<8}  {:<50}  {:>10}", id_short, title, modified);
+                    println!("{:<10}  {:<50}  {:>10}", id_short, title, modified);
                 }
 
                 println!();
@@ -282,7 +282,7 @@ fn format_search_output(
                     let note = result.note();
                     println!(
                         "{} {} (rank: {:.2})",
-                        &note.id().to_string()[..8],
+                        note.id().prefix(),
                         note.title(),
                         result.rank()
                     );
@@ -599,11 +599,7 @@ pub fn handle_show(args: &ShowArgs, notes_dir: &Path) -> Result<()> {
                 notes.len()
             );
             for note in &notes {
-                eprintln!(
-                    "  {} - {}",
-                    &note.id().to_string()[..8],
-                    note.title()
-                );
+                eprintln!("  {} - {}", note.id().prefix(), note.title());
             }
             eprintln!();
             eprintln!("Use the ID prefix to specify which note you mean.");
@@ -653,7 +649,7 @@ fn handle_edit_impl<E: EditorLauncher>(
                 notes.len()
             );
             for n in &notes {
-                eprintln!("  {} - {}", &n.id().to_string()[..8], n.title());
+                eprintln!("  {} - {}", n.id().prefix(), n.title());
             }
             eprintln!();
             eprintln!("Use the ID prefix to specify which note you mean.");

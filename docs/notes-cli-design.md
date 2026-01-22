@@ -46,7 +46,7 @@ Example: `01HQ3K5M7NXJK4QZPW8V2R6T9Y`
 - First 10 characters encode millisecond-precision timestamp
 - Remaining 16 characters provide randomness for uniqueness
 - No coordination required (can generate offline)
-- The first 8 characters are used as the filename prefix
+- The first 10 characters are used as the filename prefix
 
 #### `title` (required)
 The primary display name for the note. Used in search results, listings, and as the default link text.
@@ -165,17 +165,17 @@ notes/
 
 Recommended format: `<ulid-prefix>-<slug>.md`
 
-- **ULID prefix**: First 8 characters of a ULID, providing chronological sorting and uniqueness
+- **ULID prefix**: First 10 characters of a ULID, providing chronological sorting and uniqueness
 - **Slug**: Lowercase, hyphen-separated version of the title
 - **Extension**: Always `.md`
 
-**Example**: `01HQ3K5M-api-design-principles.md`
+**Example**: `01HQ3K5M7N-api-design-principles.md`
 
 The ULID prefix solves two problems:
 1. **Uniqueness**: Two notes with the same title get different prefixes
 2. **Sorting**: Notes sort chronologically by creation time
 
-**Why 8 characters**: The first 10 characters of a ULID encode the timestamp (millisecond precision). 8 characters provides ~70+ years of uniqueness at high creation rates — effectively infinite for personal use while keeping filenames readable.
+**Why 10 characters**: The first 10 characters of a ULID encode the full timestamp (millisecond precision), ensuring global uniqueness across time while keeping filenames readable.
 
 **Notes**:
 - The filename is NOT the source of truth for title or date (frontmatter is)

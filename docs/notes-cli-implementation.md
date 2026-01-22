@@ -96,7 +96,7 @@ predicates = "3"
 - `Tag` type (newtype over String)
 - `NoteId` type wrapping ULID with helper methods:
   - `NoteId::new()` - generate new ULID
-  - `NoteId::prefix()` - return first 8 characters for filename
+  - `NoteId::prefix()` - return first 10 characters for filename
   - `NoteId::timestamp()` - extract creation time from ULID
 - Serialization/deserialization for frontmatter
 
@@ -309,7 +309,7 @@ Full-text search across notes.
 notes new <TITLE> [--desc "description"] [--topic TOPIC]... [--tag TAG]... [--edit]
 
 Create a new note with generated ULID and timestamps.
-Filename uses first 8 characters of ULID as prefix.
+Filename uses first 10 characters of ULID as prefix.
 --desc adds a short description to the frontmatter.
 --edit opens in $EDITOR after creation.
 ```

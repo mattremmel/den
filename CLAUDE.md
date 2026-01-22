@@ -26,7 +26,7 @@ src/
 ```
 
 ### Key Design Decisions
-- **IDs**: Full ULID in frontmatter, 8-char prefix in filenames (e.g., `01HQ3K5M-api-design.md`)
+- **IDs**: Full ULID in frontmatter, 10-char prefix in filenames (e.g., `01HQ3K5M7N-api-design.md`)
 - **Topics vs Tags**: Topics are hierarchical (for browsing), tags are flat (for filtering)
 - **Links**: Stored in frontmatter with `rel` array for typed relationships and optional `note` context
 - **FTS**: SQLite FTS5 with weighted search across title > description > aliases > body
