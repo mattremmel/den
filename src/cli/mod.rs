@@ -142,6 +142,10 @@ pub struct NewArgs {
     /// Short description
     #[arg(short = 'D', long)]
     pub desc: Option<String>,
+
+    /// Open in editor after creation
+    #[arg(short, long)]
+    pub edit: bool,
 }
 
 /// Arguments for the `show` command

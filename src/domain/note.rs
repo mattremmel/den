@@ -806,7 +806,7 @@ mod tests {
         .unwrap();
 
         let display = format!("{}", note);
-        assert_eq!(display, "API Design [01HQ3K5M]");
+        assert_eq!(display, "API Design [01HQ3K5M7N]");
     }
 
     #[test]

@@ -1,20 +1,24 @@
 //! Command handlers (stubs).
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
+use chrono::Utc;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use super::{
     BacklinksArgs, CheckArgs, EditArgs, IndexArgs, LinkArgs, ListArgs, NewArgs, RelsArgs,
     SearchArgs, ShowArgs, TagArgs, TagsArgs, TopicsArgs, UnlinkArgs, UntagArgs,
+    config::Config,
     date_filter::DateFilter,
     output::{NoteListing, Output, OutputFormat, SearchListing},
 };
-use crate::domain::{Tag, Topic};
+use crate::domain::{Note, NoteId, Tag, Topic};
 use crate::index::{
     FileResult, IndexBuilder, IndexRepository, IndexedNote, ProgressReporter, SearchResult,
     SqliteIndex,
 };
+use crate::infra::{generate_filename, read_note, write_note};
 
 /// Progress reporter that prints to stdout.
 struct ConsoleReporter {
@@ -314,8 +318,162 @@ fn format_search_output(
     Ok(())
 }
 
-pub fn handle_new(_args: &NewArgs) -> Result<()> {
-    println!("new: not yet implemented");
+/// Result of creating a new note (for testability).
+#[derive(Debug)]
+pub struct NewNoteResult {
+    pub note: Note,
+    pub filename: String,
+}
+
+/// Creates a new note from the given arguments (pure function, no I/O).
+///
+/// Validates the title, topics, and tags, then constructs a Note.
+/// Returns the Note and the generated filename.
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - The title is empty or whitespace-only
+/// - Any topic is invalid
+/// - Any tag is invalid
+pub fn create_new_note(
+    title: &str,
+    description: Option<&str>,
+    topic_strs: &[String],
+    tag_strs: &[String],
+) -> Result<NewNoteResult> {
+    // Validate title
+    let trimmed_title = title.trim();
+    if trimmed_title.is_empty() {
+        bail!("title cannot be empty");
+    }
+
+    // Parse and validate topics
+    let mut topics = Vec::new();
+    for topic_str in topic_strs {
+        let topic = Topic::new(topic_str)
+            .with_context(|| format!("invalid topic '{}': topics must contain only alphanumeric characters, hyphens, underscores, and forward slashes", topic_str))?;
+        topics.push(topic);
+    }
+
+    // Parse and validate tags
+    let mut tags = Vec::new();
+    for tag_str in tag_strs {
+        let tag = Tag::new(tag_str)
+            .with_context(|| format!("invalid tag '{}': tags must contain only alphanumeric characters, hyphens, and underscores (no spaces)", tag_str))?;
+        tags.push(tag);
+    }
+
+    // Generate ID and timestamps
+    let id = NoteId::new();
+    let now = Utc::now();
+
+    // Build the note
+    let note = Note::builder(id.clone(), trimmed_title, now, now)
+        .description(description.map(|s| s.to_string()))
+        .topics(topics)
+        .tags(tags)
+        .build()
+        .with_context(|| "failed to create note")?;
+
+    // Generate filename
+    let filename = generate_filename(&id, trimmed_title);
+
+    Ok(NewNoteResult { note, filename })
+}
+
+/// Opens a file in the user's configured editor.
+fn open_in_editor(path: &Path, config: &Config) -> Result<()> {
+    let editor = config.editor();
+
+    // Parse editor command (may include args like "code --wait")
+    let parts: Vec<&str> = editor.split_whitespace().collect();
+    if parts.is_empty() {
+        bail!("editor command is empty");
+    }
+
+    let (cmd, args) = parts.split_first().unwrap();
+
+    let status = Command::new(cmd)
+        .args(args)
+        .arg(path)
+        .status()
+        .with_context(|| format!("failed to launch editor '{}'", editor))?;
+
+    if !status.success() {
+        bail!("editor '{}' exited with non-zero status", editor);
+    }
+
+    Ok(())
+}
+
+/// Updates the modified timestamp of a note after editing.
+fn update_modified_timestamp(path: &Path) -> Result<()> {
+    let parsed = read_note(path).with_context(|| "failed to read note after editing")?;
+
+    let now = Utc::now();
+    let updated_note = Note::builder(
+        parsed.note.id().clone(),
+        parsed.note.title(),
+        parsed.note.created(),
+        now,
+    )
+    .description(parsed.note.description().map(|s| s.to_string()))
+    .topics(parsed.note.topics().to_vec())
+    .aliases(parsed.note.aliases().to_vec())
+    .tags(parsed.note.tags().to_vec())
+    .links(parsed.note.links().to_vec())
+    .build()
+    .with_context(|| "failed to rebuild note")?;
+
+    write_note(path, &updated_note, &parsed.body).with_context(|| "failed to write updated note")?;
+
+    Ok(())
+}
+
+pub fn handle_new(args: &NewArgs, notes_dir: &Path, config: &Config) -> Result<()> {
+    // Validate that the notes directory exists
+    if !notes_dir.exists() {
+        bail!(
+            "notes directory does not exist: {}",
+            notes_dir.display()
+        );
+    }
+
+    // Create the note (validates inputs)
+    let result = create_new_note(
+        &args.title,
+        args.desc.as_deref(),
+        &args.topics,
+        &args.tags,
+    )?;
+
+    // Construct file path
+    let file_path = notes_dir.join(&result.filename);
+
+    // Write the note file
+    write_note(&file_path, &result.note, "")
+        .with_context(|| format!("failed to write note to {}", file_path.display()))?;
+
+    // Update index if it exists
+    let db_path = index_db_path(notes_dir);
+    if db_path.exists() && let Ok(mut index) = SqliteIndex::open(&db_path) {
+        let builder = IndexBuilder::new(notes_dir.to_path_buf());
+        // Ignore index errors - note was created successfully
+        let _ = builder.incremental_update(&mut index);
+    }
+
+    // Print success message
+    println!("Created: {} [{}]", result.note.title(), result.note.id().prefix());
+    println!("  {}", file_path.display());
+
+    // Open in editor if requested
+    if args.edit {
+        open_in_editor(&file_path, config)?;
+        // Update modified timestamp after editing
+        update_modified_timestamp(&file_path)?;
+    }
+
     Ok(())
 }
 
@@ -704,5 +862,272 @@ mod tests {
         assert_eq!(filtered[0].note().title(), "High Rank");
         assert_eq!(filtered[1].note().title(), "Medium Rank");
         assert_eq!(filtered[2].note().title(), "Low Rank");
+    }
+
+    // ===========================================
+    // create_new_note() tests
+    // ===========================================
+
+    #[test]
+    fn create_new_note_generates_valid_note() {
+        let result = create_new_note("Test Note", None, &[], &[]).unwrap();
+        assert_eq!(result.note.title(), "Test Note");
+        assert!(result.note.description().is_none());
+        assert!(result.note.topics().is_empty());
+        assert!(result.note.tags().is_empty());
+    }
+
+    #[test]
+    fn create_new_note_sets_timestamps_to_now() {
+        let before = Utc::now();
+        let result = create_new_note("Test Note", None, &[], &[]).unwrap();
+        let after = Utc::now();
+
+        assert!(result.note.created() >= before);
+        assert!(result.note.created() <= after);
+        assert_eq!(result.note.created(), result.note.modified());
+    }
+
+    #[test]
+    fn create_new_note_with_description() {
+        let result =
+            create_new_note("Test Note", Some("A test description"), &[], &[]).unwrap();
+        assert_eq!(result.note.description(), Some("A test description"));
+    }
+
+    #[test]
+    fn create_new_note_with_valid_topics() {
+        let topics = vec!["software/rust".to_string(), "reference".to_string()];
+        let result = create_new_note("Test Note", None, &topics, &[]).unwrap();
+        assert_eq!(result.note.topics().len(), 2);
+        assert_eq!(result.note.topics()[0].to_string(), "software/rust");
+        assert_eq!(result.note.topics()[1].to_string(), "reference");
+    }
+
+    #[test]
+    fn create_new_note_rejects_invalid_topic() {
+        let topics = vec!["software@invalid".to_string()];
+        let result = create_new_note("Test Note", None, &topics, &[]);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("invalid topic"));
+    }
+
+    #[test]
+    fn create_new_note_normalizes_topics() {
+        let topics = vec!["/software/rust/".to_string()];
+        let result = create_new_note("Test Note", None, &topics, &[]).unwrap();
+        assert_eq!(result.note.topics()[0].to_string(), "software/rust");
+    }
+
+    #[test]
+    fn create_new_note_with_valid_tags() {
+        let tags = vec!["draft".to_string(), "important".to_string()];
+        let result = create_new_note("Test Note", None, &[], &tags).unwrap();
+        assert_eq!(result.note.tags().len(), 2);
+        assert_eq!(result.note.tags()[0].as_str(), "draft");
+        assert_eq!(result.note.tags()[1].as_str(), "important");
+    }
+
+    #[test]
+    fn create_new_note_rejects_invalid_tag() {
+        let tags = vec!["has spaces".to_string()];
+        let result = create_new_note("Test Note", None, &[], &tags);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("invalid tag"));
+    }
+
+    #[test]
+    fn create_new_note_normalizes_tags_to_lowercase() {
+        let tags = vec!["DRAFT".to_string()];
+        let result = create_new_note("Test Note", None, &[], &tags).unwrap();
+        assert_eq!(result.note.tags()[0].as_str(), "draft");
+    }
+
+    #[test]
+    fn create_new_note_returns_correct_filename() {
+        let result = create_new_note("API Design", None, &[], &[]).unwrap();
+        // Should be 10-char prefix + slug + .md
+        assert!(result.filename.ends_with("-api-design.md"));
+        assert_eq!(result.filename.len(), 10 + 1 + "api-design".len() + 3);
+    }
+
+    #[test]
+    fn create_new_note_rejects_empty_title() {
+        let result = create_new_note("", None, &[], &[]);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("empty"));
+    }
+
+    #[test]
+    fn create_new_note_rejects_whitespace_only_title() {
+        let result = create_new_note("   ", None, &[], &[]);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("empty"));
+    }
+
+    // ===========================================
+    // handle_new() integration tests
+    // ===========================================
+
+    mod handle_new_tests {
+        use super::*;
+        use crate::infra::read_note;
+        use tempfile::TempDir;
+
+        fn test_config() -> Config {
+            Config::default()
+        }
+
+        fn test_args(title: &str) -> NewArgs {
+            NewArgs {
+                title: title.to_string(),
+                topics: vec![],
+                tags: vec![],
+                desc: None,
+                edit: false,
+            }
+        }
+
+        #[test]
+        fn handle_new_creates_file() {
+            let dir = TempDir::new().unwrap();
+            let args = test_args("Test Note");
+            let config = test_config();
+
+            handle_new(&args, dir.path(), &config).unwrap();
+
+            // Find the created file
+            let files: Vec<_> = std::fs::read_dir(dir.path())
+                .unwrap()
+                .filter_map(Result::ok)
+                .filter(|e| e.path().extension().is_some_and(|ext| ext == "md"))
+                .collect();
+
+            assert_eq!(files.len(), 1, "Should create exactly one .md file");
+        }
+
+        #[test]
+        fn handle_new_file_has_correct_filename_format() {
+            let dir = TempDir::new().unwrap();
+            let args = test_args("API Design");
+            let config = test_config();
+
+            handle_new(&args, dir.path(), &config).unwrap();
+
+            let files: Vec<_> = std::fs::read_dir(dir.path())
+                .unwrap()
+                .filter_map(Result::ok)
+                .collect();
+
+            let filename = files[0].file_name();
+            let name = filename.to_string_lossy();
+            assert!(name.ends_with("-api-design.md"));
+            // First 10 chars should be ULID prefix
+            assert_eq!(name.len(), 10 + 1 + "api-design".len() + 3);
+        }
+
+        #[test]
+        fn handle_new_file_contains_valid_frontmatter() {
+            let dir = TempDir::new().unwrap();
+            let args = NewArgs {
+                title: "Test Note".to_string(),
+                topics: vec!["software/rust".to_string()],
+                tags: vec!["draft".to_string()],
+                desc: Some("A test description".to_string()),
+                edit: false,
+            };
+            let config = test_config();
+
+            handle_new(&args, dir.path(), &config).unwrap();
+
+            // Find and read the created file
+            let file = std::fs::read_dir(dir.path())
+                .unwrap()
+                .filter_map(Result::ok)
+                .find(|e| e.path().extension().is_some_and(|ext| ext == "md"))
+                .unwrap();
+
+            let parsed = read_note(&file.path()).unwrap();
+            assert_eq!(parsed.note.title(), "Test Note");
+            assert_eq!(parsed.note.description(), Some("A test description"));
+            assert_eq!(parsed.note.topics().len(), 1);
+            assert_eq!(parsed.note.tags().len(), 1);
+        }
+
+        #[test]
+        fn handle_new_creates_multiple_files() {
+            let dir = TempDir::new().unwrap();
+            let config = test_config();
+
+            // Create two notes with different titles
+            handle_new(&test_args("First Note"), dir.path(), &config).unwrap();
+            handle_new(&test_args("Second Note"), dir.path(), &config).unwrap();
+
+            // Find the created files
+            let files: Vec<_> = std::fs::read_dir(dir.path())
+                .unwrap()
+                .filter_map(Result::ok)
+                .filter(|e| e.path().extension().is_some_and(|ext| ext == "md"))
+                .collect();
+
+            assert_eq!(files.len(), 2, "Should create two unique files");
+        }
+
+        #[test]
+        fn handle_new_fails_with_invalid_topic() {
+            let dir = TempDir::new().unwrap();
+            let args = NewArgs {
+                title: "Test Note".to_string(),
+                topics: vec!["invalid@topic".to_string()],
+                tags: vec![],
+                desc: None,
+                edit: false,
+            };
+            let config = test_config();
+
+            let result = handle_new(&args, dir.path(), &config);
+            assert!(result.is_err());
+        }
+
+        #[test]
+        fn handle_new_fails_with_invalid_tag() {
+            let dir = TempDir::new().unwrap();
+            let args = NewArgs {
+                title: "Test Note".to_string(),
+                topics: vec![],
+                tags: vec!["has spaces".to_string()],
+                desc: None,
+                edit: false,
+            };
+            let config = test_config();
+
+            let result = handle_new(&args, dir.path(), &config);
+            assert!(result.is_err());
+        }
+
+        #[test]
+        fn handle_new_fails_with_empty_title() {
+            let dir = TempDir::new().unwrap();
+            let args = test_args("");
+            let config = test_config();
+
+            let result = handle_new(&args, dir.path(), &config);
+            assert!(result.is_err());
+        }
+
+        #[test]
+        fn handle_new_fails_if_directory_doesnt_exist() {
+            let args = test_args("Test Note");
+            let config = test_config();
+
+            let result = handle_new(&args, Path::new("/nonexistent/directory"), &config);
+            assert!(result.is_err());
+            let err = result.unwrap_err().to_string();
+            assert!(err.contains("does not exist"));
+        }
     }
 }

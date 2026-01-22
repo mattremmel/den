@@ -39,11 +39,13 @@ impl NoteId {
         Self(Ulid::from_datetime(system_time))
     }
 
-    /// Returns the 8-character prefix of the ULID.
+    /// Returns the 10-character prefix of the ULID.
     ///
-    /// This prefix is used in filenames (e.g., `01HQ3K5M-api-design.md`).
+    /// This prefix is used in filenames (e.g., `01HQ3K5M7N-api-design.md`).
+    /// The first 10 characters encode the full 48-bit millisecond timestamp,
+    /// ensuring unique prefixes for notes created at different times.
     pub fn prefix(&self) -> String {
-        self.0.to_string()[..8].to_string()
+        self.0.to_string()[..10].to_string()
     }
 
     /// Returns the timestamp when this ID was created.
@@ -130,18 +132,18 @@ mod tests {
     }
 
     #[test]
-    fn prefix_returns_first_8_chars() {
+    fn prefix_returns_first_10_chars() {
         let id = NoteId::new();
         let prefix = id.prefix();
         let full = id.to_string();
-        assert_eq!(prefix.len(), 8);
-        assert_eq!(prefix, &full[..8]);
+        assert_eq!(prefix.len(), 10);
+        assert_eq!(prefix, &full[..10]);
     }
 
     #[test]
     fn prefix_for_known_ulid() {
         let id: NoteId = "01HQ3K5M7NXJK4QZPW8V2R6T9Y".parse().unwrap();
-        assert_eq!(id.prefix(), "01HQ3K5M");
+        assert_eq!(id.prefix(), "01HQ3K5M7N");
     }
 
     #[test]

@@ -29,7 +29,7 @@ pub fn run() -> Result<()> {
         Command::Index(args) => handle_index(args, &notes_dir, verbose),
         Command::List(args) => handle_list(args, &notes_dir),
         Command::Search(args) => handle_search(args, &notes_dir),
-        Command::New(args) => handle_new(args),
+        Command::New(args) => handle_new(args, &notes_dir, &config),
         Command::Show(args) => handle_show(args),
         Command::Edit(args) => handle_edit(args),
         Command::Topics(args) => handle_topics(args),
