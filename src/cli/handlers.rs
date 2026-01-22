@@ -455,9 +455,9 @@ pub fn handle_new(args: &NewArgs, notes_dir: &Path, config: &Config) -> Result<(
     write_note(&file_path, &result.note, "")
         .with_context(|| format!("failed to write note to {}", file_path.display()))?;
 
-    // Update index if it exists
+    // Update index (create if needed)
     let db_path = index_db_path(notes_dir);
-    if db_path.exists() && let Ok(mut index) = SqliteIndex::open(&db_path) {
+    if let Ok(mut index) = SqliteIndex::open(&db_path) {
         let builder = IndexBuilder::new(notes_dir.to_path_buf());
         // Ignore index errors - note was created successfully
         let _ = builder.incremental_update(&mut index);
@@ -472,6 +472,12 @@ pub fn handle_new(args: &NewArgs, notes_dir: &Path, config: &Config) -> Result<(
         open_in_editor(&file_path, config)?;
         // Update modified timestamp after editing
         update_modified_timestamp(&file_path)?;
+
+        // Update index again after editing to capture content changes
+        if let Ok(mut index) = SqliteIndex::open(&db_path) {
+            let builder = IndexBuilder::new(notes_dir.to_path_buf());
+            let _ = builder.incremental_update(&mut index);
+        }
     }
 
     Ok(())
@@ -1205,8 +1211,10 @@ mod tests {
             let files: Vec<_> = std::fs::read_dir(dir.path())
                 .unwrap()
                 .filter_map(Result::ok)
+                .filter(|e| e.path().extension().is_some_and(|ext| ext == "md"))
                 .collect();
 
+            assert_eq!(files.len(), 1, "Should create exactly one .md file");
             let filename = files[0].file_name();
             let name = filename.to_string_lossy();
             assert!(name.ends_with("-api-design.md"));
