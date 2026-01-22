@@ -1,14 +1,85 @@
 //! Command handlers (stubs).
 
-use anyhow::Result;
+use anyhow::{Context, Result};
+use std::path::{Path, PathBuf};
 
 use super::{
     BacklinksArgs, CheckArgs, EditArgs, IndexArgs, LinkArgs, ListArgs, NewArgs, RelsArgs,
     SearchArgs, ShowArgs, TagArgs, TagsArgs, TopicsArgs, UnlinkArgs, UntagArgs,
 };
+use crate::index::{IndexBuilder, FileResult, ProgressReporter, SqliteIndex};
 
-pub fn handle_index(_args: &IndexArgs) -> Result<()> {
-    println!("index: not yet implemented");
+/// Progress reporter that prints to stdout.
+struct ConsoleReporter {
+    verbose: bool,
+}
+
+impl ConsoleReporter {
+    fn new(verbose: bool) -> Self {
+        Self { verbose }
+    }
+}
+
+impl ProgressReporter for ConsoleReporter {
+    fn on_file(&mut self, path: &Path, result: FileResult) {
+        if self.verbose {
+            match result {
+                FileResult::Indexed => println!("  indexed: {}", path.display()),
+                FileResult::Skipped => println!("  skipped: {}", path.display()),
+                FileResult::Error(msg) => eprintln!("  error: {}: {}", path.display(), msg),
+            }
+        }
+    }
+
+    fn on_complete(&mut self, indexed: usize, errors: usize) {
+        if errors > 0 {
+            eprintln!("Indexed {} notes with {} errors", indexed, errors);
+        } else {
+            println!("Indexed {} notes", indexed);
+        }
+    }
+}
+
+/// Returns the default index database path for a notes directory.
+fn index_db_path(notes_dir: &Path) -> PathBuf {
+    notes_dir.join(".index").join("notes.db")
+}
+
+pub fn handle_index(args: &IndexArgs, notes_dir: &Path, verbose: bool) -> Result<()> {
+    let db_path = index_db_path(notes_dir);
+    let mut index = SqliteIndex::open(&db_path)
+        .with_context(|| format!("failed to open index at {}", db_path.display()))?;
+
+    let builder = IndexBuilder::new(notes_dir.to_path_buf());
+    let mut reporter = ConsoleReporter::new(verbose);
+
+    if args.full {
+        println!("Rebuilding index...");
+        let result = builder
+            .full_rebuild_with_progress(&mut index, &mut reporter)
+            .with_context(|| "failed to rebuild index")?;
+
+        for error in &result.errors {
+            eprintln!("  {}", error);
+        }
+    } else {
+        println!("Updating index...");
+        let result = builder
+            .incremental_update_with_progress(&mut index, &mut reporter)
+            .with_context(|| "failed to update index")?;
+
+        if verbose && (result.added > 0 || result.modified > 0 || result.removed > 0) {
+            println!(
+                "  {} added, {} modified, {} removed",
+                result.added, result.modified, result.removed
+            );
+        }
+
+        for error in &result.errors {
+            eprintln!("  {}", error);
+        }
+    }
+
     Ok(())
 }
 

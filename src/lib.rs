@@ -21,10 +21,12 @@ use cli::{
 /// Main entry point for the CLI application.
 pub fn run() -> Result<()> {
     let cli = Cli::parse();
-    let _config = Config::load()?;
+    let config = Config::load()?;
+    let notes_dir = config.notes_dir(cli.dir.as_ref());
+    let verbose = cli.verbose > 0;
 
     match &cli.command {
-        Command::Index(args) => handle_index(args),
+        Command::Index(args) => handle_index(args, &notes_dir, verbose),
         Command::List(args) => handle_list(args),
         Command::Search(args) => handle_search(args),
         Command::New(args) => handle_new(args),
