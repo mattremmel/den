@@ -50,3 +50,46 @@ pub struct TagListing {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub count: Option<usize>,
 }
+
+/// A search result in listing output.
+#[derive(Debug, Serialize)]
+pub struct SearchListing {
+    pub id: String,
+    pub title: String,
+    pub path: String,
+    pub rank: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub snippet: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn search_listing_serializes_to_json() {
+        let listing = SearchListing {
+            id: "01HQ3K5M".to_string(),
+            title: "Test Note".to_string(),
+            path: "test.md".to_string(),
+            rank: 0.75,
+            snippet: Some("matching <b>text</b>".to_string()),
+        };
+        let json = serde_json::to_string(&listing).unwrap();
+        assert!(json.contains("\"rank\":0.75"));
+        assert!(json.contains("\"snippet\":"));
+    }
+
+    #[test]
+    fn search_listing_omits_none_snippet() {
+        let listing = SearchListing {
+            id: "01HQ3K5M".to_string(),
+            title: "Test Note".to_string(),
+            path: "test.md".to_string(),
+            rank: 0.5,
+            snippet: None,
+        };
+        let json = serde_json::to_string(&listing).unwrap();
+        assert!(!json.contains("snippet"));
+    }
+}
