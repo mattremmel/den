@@ -3427,14 +3427,228 @@ Body content."#
         assert!(result.is_ok());
     }
 
+    // ===========================================
+    // Cycle 9: --fix flag for broken links
+    // ===========================================
+
+    fn note_with_multiple_links(id_suffix: &str, title: &str, target_ids: &[&str]) -> String {
+        let links: Vec<String> = target_ids
+            .iter()
+            .map(|tid| format!("  - id: {}\n    rel:\n      - see-also", tid))
+            .collect();
+        format!(
+            r#"---
+id: 01HQ3K5M7NXJK4QZPW8V2R6T{id_suffix}
+title: {title}
+created: 2024-01-15T10:30:00Z
+modified: 2024-01-15T10:30:00Z
+topics:
+  - test/topic
+links:
+{}
+---
+
+Body content."#,
+            links.join("\n")
+        )
+    }
+
     #[test]
-    fn handle_check_fix_flag_shows_warning() {
+    fn handle_check_fix_removes_single_broken_link() {
         let dir = TempDir::new().unwrap();
+
+        // Create a note with a broken link
+        let note_path = dir.path().join("01HQ3K5M7N-note.md");
+        std::fs::write(
+            &note_path,
+            note_with_link("9A", "Note A", "01ZZZZZZZZXJK4QZPW8V2R6T9X"),
+        )
+        .unwrap();
 
         let args = CheckArgs { fix: true };
         let result = handle_check(&args, dir.path());
 
-        // Should still succeed, just with a warning
+        // Should succeed after fixing
         assert!(result.is_ok());
+
+        // Verify the link was removed
+        let content = std::fs::read_to_string(&note_path).unwrap();
+        assert!(!content.contains("01ZZZZZZZZXJK4QZPW8V2R6T9X"));
+        assert!(!content.contains("links:"));
+    }
+
+    #[test]
+    fn handle_check_fix_removes_only_broken_links_keeps_valid() {
+        let dir = TempDir::new().unwrap();
+
+        // Create target note
+        std::fs::write(
+            dir.path().join("01HQ3K5M7N-target.md"),
+            valid_note_content("9B", "Target"),
+        )
+        .unwrap();
+
+        // Create a note with one valid and one broken link
+        let note_path = dir.path().join("01HQ3K5M7N-source.md");
+        std::fs::write(
+            &note_path,
+            note_with_multiple_links(
+                "9A",
+                "Source",
+                &[
+                    "01HQ3K5M7NXJK4QZPW8V2R6T9B", // valid
+                    "01ZZZZZZZZXJK4QZPW8V2R6T9X", // broken
+                ],
+            ),
+        )
+        .unwrap();
+
+        let args = CheckArgs { fix: true };
+        let result = handle_check(&args, dir.path());
+
+        assert!(result.is_ok());
+
+        // Verify broken link was removed but valid link remains
+        let content = std::fs::read_to_string(&note_path).unwrap();
+        assert!(!content.contains("01ZZZZZZZZXJK4QZPW8V2R6T9X"));
+        assert!(content.contains("01HQ3K5M7NXJK4QZPW8V2R6T9B"));
+    }
+
+    #[test]
+    fn handle_check_fix_works_across_multiple_files() {
+        let dir = TempDir::new().unwrap();
+
+        // Create two notes with broken links
+        let note1_path = dir.path().join("01HQ3K5M7N-note1.md");
+        std::fs::write(
+            &note1_path,
+            note_with_link("9A", "Note 1", "01ZZZZZZZZXJK4QZPW8V2R6T9X"),
+        )
+        .unwrap();
+
+        let note2_path = dir.path().join("01HQ3K5M7N-note2.md");
+        std::fs::write(
+            &note2_path,
+            note_with_link("9B", "Note 2", "01ZZZZZZZZXJK4QZPW8V2R6T9Y"),
+        )
+        .unwrap();
+
+        let args = CheckArgs { fix: true };
+        let result = handle_check(&args, dir.path());
+
+        assert!(result.is_ok());
+
+        // Verify both files were fixed
+        let content1 = std::fs::read_to_string(&note1_path).unwrap();
+        let content2 = std::fs::read_to_string(&note2_path).unwrap();
+        assert!(!content1.contains("01ZZZZZZZZXJK4QZPW8V2R6T9X"));
+        assert!(!content2.contains("01ZZZZZZZZXJK4QZPW8V2R6T9Y"));
+    }
+
+    #[test]
+    fn handle_check_fix_does_not_modify_files_without_broken_links() {
+        let dir = TempDir::new().unwrap();
+
+        // Create target note
+        std::fs::write(
+            dir.path().join("01HQ3K5M7N-target.md"),
+            valid_note_content("9B", "Target"),
+        )
+        .unwrap();
+
+        // Create source with valid link only
+        let note_path = dir.path().join("01HQ3K5M7N-source.md");
+        let original_content = note_with_link("9A", "Source", "01HQ3K5M7NXJK4QZPW8V2R6T9B");
+        std::fs::write(&note_path, &original_content).unwrap();
+
+        let args = CheckArgs { fix: true };
+        let result = handle_check(&args, dir.path());
+
+        assert!(result.is_ok());
+
+        // Verify source file still contains the valid link
+        let content = std::fs::read_to_string(&note_path).unwrap();
+        assert!(content.contains("01HQ3K5M7NXJK4QZPW8V2R6T9B"));
+    }
+
+    #[test]
+    fn handle_check_fix_does_not_fix_duplicate_ids() {
+        let dir = TempDir::new().unwrap();
+
+        // Create two notes with the same ID
+        std::fs::write(
+            dir.path().join("01HQ3K5M7N-first.md"),
+            valid_note_content("9A", "First Note"),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("01HQ3K5M7N-second.md"),
+            valid_note_content("9A", "Second Note"),
+        )
+        .unwrap();
+
+        let args = CheckArgs { fix: true };
+        let result = handle_check(&args, dir.path());
+
+        // Should still fail - duplicates are not auto-fixable
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn handle_check_fix_does_not_fix_orphans() {
+        let dir = TempDir::new().unwrap();
+
+        // Create orphan note
+        let note_path = dir.path().join("01HQ3K5M7N-orphan.md");
+        std::fs::write(&note_path, orphan_note_content("9A", "Orphan")).unwrap();
+
+        let args = CheckArgs { fix: true };
+        let result = handle_check(&args, dir.path());
+
+        // Orphans are warnings, not errors - still succeeds
+        assert!(result.is_ok());
+
+        // Verify file wasn't modified (still no topics)
+        let content = std::fs::read_to_string(&note_path).unwrap();
+        assert!(!content.contains("topics:"));
+    }
+
+    #[test]
+    fn handle_check_fix_preserves_body_content() {
+        let dir = TempDir::new().unwrap();
+
+        let note_path = dir.path().join("01HQ3K5M7N-note.md");
+        let content_with_body = r#"---
+id: 01HQ3K5M7NXJK4QZPW8V2R6T9A
+title: Note with Body
+created: 2024-01-15T10:30:00Z
+modified: 2024-01-15T10:30:00Z
+topics:
+  - test/topic
+links:
+  - id: 01ZZZZZZZZXJK4QZPW8V2R6T9X
+    rel:
+      - see-also
+---
+
+# Important Heading
+
+This is important body content that must be preserved.
+
+- Bullet point 1
+- Bullet point 2
+"#;
+        std::fs::write(&note_path, content_with_body).unwrap();
+
+        let args = CheckArgs { fix: true };
+        let result = handle_check(&args, dir.path());
+
+        assert!(result.is_ok());
+
+        // Verify body was preserved
+        let content = std::fs::read_to_string(&note_path).unwrap();
+        assert!(content.contains("# Important Heading"));
+        assert!(content.contains("important body content"));
+        assert!(content.contains("Bullet point 1"));
     }
 }
