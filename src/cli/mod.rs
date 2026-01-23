@@ -15,9 +15,13 @@ use output::OutputFormat;
 #[derive(Parser, Debug)]
 #[command(name = "den", version, about, long_about = None)]
 pub struct Cli {
-    /// Notes directory (overrides config file)
+    /// Notes directory (overrides config file and vault)
     #[arg(short = 'd', long, global = true)]
     pub dir: Option<PathBuf>,
+
+    /// Use a named vault from config
+    #[arg(long, global = true)]
+    pub vault: Option<String>,
 
     /// Increase verbosity (-v, -vv, -vvv)
     #[arg(short, long, global = true, action = ArgAction::Count)]
@@ -89,6 +93,9 @@ pub enum Command {
 
     /// Export notes to HTML, PDF, or static site
     Export(ExportArgs),
+
+    /// List configured vaults
+    Vaults(VaultsArgs),
 }
 
 /// Arguments for the `index` command
@@ -404,4 +411,12 @@ pub struct ExportArgs {
     /// CLI output format (for status messages, not export content)
     #[arg(long = "cli-format", value_enum, default_value_t = OutputFormat::Human)]
     pub cli_format: OutputFormat,
+}
+
+/// Arguments for the `vaults` command
+#[derive(Parser, Debug)]
+pub struct VaultsArgs {
+    /// Output format
+    #[arg(short = 'f', long, value_enum, default_value_t = OutputFormat::Human)]
+    pub format: OutputFormat,
 }

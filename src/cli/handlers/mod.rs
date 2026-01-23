@@ -12,6 +12,7 @@ mod new;
 mod resolve;
 mod search;
 mod show_edit;
+mod vaults;
 
 #[cfg(test)]
 pub(crate) mod tests;
@@ -38,6 +39,7 @@ pub use new::{NewNoteResult, create_new_note, handle_new};
 pub use resolve::{ResolveResult, resolve_note};
 pub use search::handle_search;
 pub use show_edit::{handle_edit, handle_show};
+pub use vaults::handle_vaults;
 
 /// Generate shell completions script for the given shell.
 pub fn generate_completions<W: std::io::Write>(shell: Shell, out: &mut W) -> Result<()> {

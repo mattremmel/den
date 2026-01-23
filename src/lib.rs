@@ -16,7 +16,7 @@ use cli::{
         handle_archive, handle_backlinks, handle_check, handle_completions, handle_edit,
         handle_export, handle_index, handle_link, handle_list, handle_mv, handle_new, handle_rels,
         handle_search, handle_show, handle_tag, handle_tags, handle_topics, handle_unarchive,
-        handle_unlink, handle_untag,
+        handle_unlink, handle_untag, handle_vaults,
     },
 };
 
@@ -24,7 +24,9 @@ use cli::{
 pub fn run() -> Result<()> {
     let cli = Cli::parse();
     let config = Config::load()?;
-    let notes_dir = config.notes_dir(cli.dir.as_ref());
+
+    let resolved = config.resolve_notes_dir(cli.dir.as_ref(), cli.vault.as_deref())?;
+    let notes_dir = resolved.path;
     let verbose = cli.verbose > 0;
 
     match &cli.command {
@@ -48,5 +50,6 @@ pub fn run() -> Result<()> {
         Command::Archive(args) => handle_archive(args, &notes_dir),
         Command::Unarchive(args) => handle_unarchive(args, &notes_dir),
         Command::Export(args) => handle_export(args, &notes_dir),
+        Command::Vaults(args) => handle_vaults(args, &config),
     }
 }
