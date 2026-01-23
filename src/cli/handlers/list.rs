@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use std::collections::HashSet;
 use std::path::Path;
 
-use super::{index_db_path, truncate_str};
+use super::{ARCHIVED_TAG, index_db_path, truncate_str};
 use crate::cli::ListArgs;
 use crate::cli::date_filter::DateFilter;
 use crate::cli::output::{NoteListing, Output, OutputFormat};
@@ -48,7 +48,13 @@ pub fn handle_list(args: &ListArgs, notes_dir: &Path) -> Result<()> {
         notes.retain(|n| tag_ids.contains(n.id()));
     }
 
-    // 3. Filter by dates
+    // 3. Exclude archived unless --include-archived
+    if !args.include_archived {
+        let archived_tag = Tag::new(ARCHIVED_TAG).expect("archived is a valid tag");
+        notes.retain(|n| !n.tags().contains(&archived_tag));
+    }
+
+    // 4. Filter by dates
     if let Some(created_str) = &args.created {
         let filter = DateFilter::parse(created_str)
             .map_err(|e| anyhow::anyhow!("invalid --created filter: {}", e))?;
@@ -61,10 +67,10 @@ pub fn handle_list(args: &ListArgs, notes_dir: &Path) -> Result<()> {
         notes.retain(|n| filter.matches(n.modified()));
     }
 
-    // 4. Sort by modified date, most recent first
+    // 5. Sort by modified date, most recent first
     notes.sort_by_key(|n| std::cmp::Reverse(n.modified()));
 
-    // 5. Output based on format
+    // 6. Output based on format
     match args.format {
         OutputFormat::Human => {
             if notes.is_empty() {

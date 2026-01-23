@@ -1,5 +1,6 @@
 //! Command handlers for the CLI.
 
+mod archive;
 mod check;
 mod index;
 mod links;
@@ -24,6 +25,7 @@ use crate::cli::{Cli, CompletionsArgs};
 use crate::index::{FileResult, ProgressReporter};
 
 // Re-export public items
+pub use archive::{ARCHIVED_TAG, handle_archive, handle_unarchive};
 pub use check::handle_check;
 pub use index::handle_index;
 pub use links::{handle_backlinks, handle_link, handle_rels, handle_unlink};

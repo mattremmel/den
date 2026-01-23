@@ -1962,3 +1962,411 @@ mod mv_tests {
         assert!(output.contains(".md"));
     }
 }
+
+// ===========================================
+// archive command tests
+// ===========================================
+mod archive_tests {
+    use super::*;
+
+    #[test]
+    fn test_archive_adds_archived_tag() {
+        let env = TestEnv::new();
+
+        let note = TestNote::new("Test Note").id("01HQ3K5M7NXJK4QZPW8V2R6T9Y");
+        env.add_note(&note);
+        env.build_index().expect("Should build index");
+
+        env.cmd()
+            .archive("01HQ3K5M7N")
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("Archived"));
+
+        // Verify tag was added by checking tags list
+        env.cmd()
+            .tags()
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("archived"));
+    }
+
+    #[test]
+    fn test_archive_idempotent() {
+        let env = TestEnv::new();
+
+        let note = TestNote::new("Already Archived Note")
+            .id("01HQ3K5M7NXJK4QZPW8V2R6T9Y")
+            .tag("archived");
+        env.add_note(&note);
+        env.build_index().expect("Should build index");
+
+        env.cmd()
+            .archive("01HQ3K5M7N")
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("already archived"));
+    }
+
+    #[test]
+    fn test_archive_not_found() {
+        let env = TestEnv::new();
+        env.build_index().expect("Should build index");
+
+        env.cmd()
+            .archive("nonexistent")
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains("not found"));
+    }
+
+    #[test]
+    fn test_archive_by_title() {
+        let env = TestEnv::new();
+
+        let note = TestNote::new("Unique Title Note");
+        env.add_note(&note);
+        env.build_index().expect("Should build index");
+
+        env.cmd()
+            .archive("Unique Title Note")
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("Archived"));
+    }
+
+    #[test]
+    fn test_archive_updates_index() {
+        let env = TestEnv::new();
+
+        let note = TestNote::new("Index Archive Note").id("01HQ3K5M7NXJK4QZPW8V2R6T9Y");
+        env.add_note(&note);
+        env.build_index().expect("Should build index");
+
+        env.cmd().archive("01HQ3K5M7N").assert().success();
+
+        // Tag should appear in tags list (index was updated)
+        env.cmd()
+            .tags()
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("archived"));
+    }
+
+    #[test]
+    fn test_archive_format_json() {
+        let env = TestEnv::new();
+
+        let note = TestNote::new("JSON Archive Note").id("01HQ3K5M7NXJK4QZPW8V2R6T9Y");
+        env.add_note(&note);
+        env.build_index().expect("Should build index");
+
+        let output: serde_json::Value = env.cmd().archive("01HQ3K5M7N").format_json().output_json();
+
+        assert!(output.is_object(), "Output should be a JSON object");
+        let data = output.get("data").expect("Should have 'data' field");
+        assert_eq!(data["archived"], true);
+    }
+}
+
+// ===========================================
+// unarchive command tests
+// ===========================================
+mod unarchive_tests {
+    use super::*;
+
+    #[test]
+    fn test_unarchive_removes_archived_tag() {
+        let env = TestEnv::new();
+
+        let note = TestNote::new("Archived Note")
+            .id("01HQ3K5M7NXJK4QZPW8V2R6T9Y")
+            .tag("archived");
+        env.add_note(&note);
+        env.build_index().expect("Should build index");
+
+        env.cmd()
+            .unarchive("01HQ3K5M7N")
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("Unarchived"));
+
+        // Verify tag was removed
+        env.cmd()
+            .tags()
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("archived").not());
+    }
+
+    #[test]
+    fn test_unarchive_idempotent() {
+        let env = TestEnv::new();
+
+        let note = TestNote::new("Not Archived Note").id("01HQ3K5M7NXJK4QZPW8V2R6T9Y");
+        env.add_note(&note);
+        env.build_index().expect("Should build index");
+
+        env.cmd()
+            .unarchive("01HQ3K5M7N")
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("not archived"));
+    }
+
+    #[test]
+    fn test_unarchive_not_found() {
+        let env = TestEnv::new();
+        env.build_index().expect("Should build index");
+
+        env.cmd()
+            .unarchive("nonexistent")
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains("not found"));
+    }
+
+    #[test]
+    fn test_unarchive_by_title() {
+        let env = TestEnv::new();
+
+        let note = TestNote::new("Archived By Title").tag("archived");
+        env.add_note(&note);
+        env.build_index().expect("Should build index");
+
+        env.cmd()
+            .unarchive("Archived By Title")
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("Unarchived"));
+    }
+
+    #[test]
+    fn test_unarchive_updates_index() {
+        let env = TestEnv::new();
+
+        let note = TestNote::new("Index Unarchive Note")
+            .id("01HQ3K5M7NXJK4QZPW8V2R6T9Y")
+            .tag("archived");
+        env.add_note(&note);
+        env.build_index().expect("Should build index");
+
+        env.cmd().unarchive("01HQ3K5M7N").assert().success();
+
+        // Archived tag should be gone from tags list
+        env.cmd()
+            .tags()
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("archived").not());
+    }
+
+    #[test]
+    fn test_unarchive_format_json() {
+        let env = TestEnv::new();
+
+        let note = TestNote::new("JSON Unarchive Note")
+            .id("01HQ3K5M7NXJK4QZPW8V2R6T9Y")
+            .tag("archived");
+        env.add_note(&note);
+        env.build_index().expect("Should build index");
+
+        let output: serde_json::Value = env
+            .cmd()
+            .unarchive("01HQ3K5M7N")
+            .format_json()
+            .output_json();
+
+        assert!(output.is_object(), "Output should be a JSON object");
+        let data = output.get("data").expect("Should have 'data' field");
+        assert_eq!(data["archived"], false);
+    }
+}
+
+// ===========================================
+// archive filtering tests (ls excludes archived by default)
+// ===========================================
+mod archive_filtering_tests {
+    use super::*;
+
+    #[test]
+    fn test_ls_excludes_archived_by_default() {
+        let env = TestEnv::new();
+
+        let active = TestNote::new("Active Note");
+        let archived = TestNote::new("Archived Note").tag("archived");
+        env.add_note(&active);
+        env.add_note(&archived);
+        env.build_index().expect("Should build index");
+
+        env.cmd()
+            .ls()
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("Active Note"))
+            .stdout(predicate::str::contains("Archived Note").not());
+    }
+
+    #[test]
+    fn test_ls_include_archived_shows_all() {
+        let env = TestEnv::new();
+
+        let active = TestNote::new("Active Note");
+        let archived = TestNote::new("Archived Note").tag("archived");
+        env.add_note(&active);
+        env.add_note(&archived);
+        env.build_index().expect("Should build index");
+
+        env.cmd()
+            .ls()
+            .with_include_archived()
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("Active Note"))
+            .stdout(predicate::str::contains("Archived Note"));
+    }
+
+    #[test]
+    fn test_ls_archived_only_via_tag_filter() {
+        let env = TestEnv::new();
+
+        let active = TestNote::new("Active Note");
+        let archived = TestNote::new("Archived Note").tag("archived");
+        env.add_note(&active);
+        env.add_note(&archived);
+        env.build_index().expect("Should build index");
+
+        // Using --tag archived with --include-archived shows only archived
+        env.cmd()
+            .ls()
+            .with_include_archived()
+            .with_tag("archived")
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("Archived Note"))
+            .stdout(predicate::str::contains("Active Note").not());
+    }
+
+    #[test]
+    fn test_ls_all_archived_shows_empty() {
+        let env = TestEnv::new();
+
+        // Only archived notes in the vault
+        let archived1 = TestNote::new("Archived One").tag("archived");
+        let archived2 = TestNote::new("Archived Two").tag("archived");
+        env.add_note(&archived1);
+        env.add_note(&archived2);
+        env.build_index().expect("Should build index");
+
+        // Default ls should show no notes
+        env.cmd()
+            .ls()
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("Archived One").not())
+            .stdout(predicate::str::contains("Archived Two").not());
+    }
+
+    #[test]
+    fn test_ls_topic_filter_respects_archived() {
+        let env = TestEnv::new();
+
+        let active = TestNote::new("Active Software Note").topic("software");
+        let archived = TestNote::new("Archived Software Note")
+            .topic("software")
+            .tag("archived");
+        env.add_note(&active);
+        env.add_note(&archived);
+        env.build_index().expect("Should build index");
+
+        // Topic filter should also exclude archived
+        env.cmd()
+            .ls()
+            .args(["software"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("Active Software Note"))
+            .stdout(predicate::str::contains("Archived Software Note").not());
+    }
+
+    #[test]
+    fn test_ls_json_excludes_archived() {
+        let env = TestEnv::new();
+
+        let active = TestNote::new("Active JSON Note");
+        let archived = TestNote::new("Archived JSON Note").tag("archived");
+        env.add_note(&active);
+        env.add_note(&archived);
+        env.build_index().expect("Should build index");
+
+        let output: serde_json::Value = env.cmd().ls().format_json().output_json();
+
+        let data = output.get("data").expect("Should have 'data' field");
+        let items = data.as_array().expect("data should be array");
+
+        // Should only have one item (the active note)
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0]["title"], "Active JSON Note");
+    }
+
+    #[test]
+    fn test_search_excludes_archived_by_default() {
+        let env = TestEnv::new();
+
+        let active = TestNote::new("Active Rust Note").body("Programming in Rust");
+        let archived = TestNote::new("Archived Rust Note")
+            .tag("archived")
+            .body("Old Rust content");
+        env.add_note(&active);
+        env.add_note(&archived);
+        env.build_index().expect("Should build index");
+
+        env.cmd()
+            .search("Rust")
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("Active Rust Note"))
+            .stdout(predicate::str::contains("Archived Rust Note").not());
+    }
+
+    #[test]
+    fn test_search_include_archived() {
+        let env = TestEnv::new();
+
+        let active = TestNote::new("Active Rust Note").body("Programming in Rust");
+        let archived = TestNote::new("Archived Rust Note")
+            .tag("archived")
+            .body("Old Rust content");
+        env.add_note(&active);
+        env.add_note(&archived);
+        env.build_index().expect("Should build index");
+
+        env.cmd()
+            .search("Rust")
+            .with_include_archived()
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("Active Rust Note"))
+            .stdout(predicate::str::contains("Archived Rust Note"));
+    }
+
+    #[test]
+    fn test_search_json_excludes_archived() {
+        let env = TestEnv::new();
+
+        let active = TestNote::new("Active Findable Note");
+        let archived = TestNote::new("Archived Findable Note").tag("archived");
+        env.add_note(&active);
+        env.add_note(&archived);
+        env.build_index().expect("Should build index");
+
+        let output: serde_json::Value = env.cmd().search("Findable").format_json().output_json();
+
+        let data = output.get("data").expect("Should have 'data' field");
+        let items = data.as_array().expect("data should be array");
+
+        // Should only find the active note
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0]["title"], "Active Findable Note");
+    }
+}

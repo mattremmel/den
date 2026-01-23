@@ -147,6 +147,16 @@ impl DenCommand {
         self.args(["mv", note])
     }
 
+    /// Configures for the `archive` command.
+    pub fn archive(self, note: &str) -> Self {
+        self.args(["archive", note])
+    }
+
+    /// Configures for the `unarchive` command.
+    pub fn unarchive(self, note: &str) -> Self {
+        self.args(["unarchive", note])
+    }
+
     // ===========================================
     // Format Options
     // ===========================================
@@ -218,6 +228,11 @@ impl DenCommand {
     /// Adds `--clear-topics` to the command (for mv).
     pub fn with_clear_topics(self) -> Self {
         self.args(["--clear-topics"])
+    }
+
+    /// Adds `--include-archived` / `-a` to the command.
+    pub fn with_include_archived(self) -> Self {
+        self.args(["--include-archived"])
     }
 }
 

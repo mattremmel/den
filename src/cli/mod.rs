@@ -80,6 +80,12 @@ pub enum Command {
 
     /// Move/rename a note (change title or topics)
     Mv(MvArgs),
+
+    /// Archive a note (adds 'archived' tag)
+    Archive(ArchiveArgs),
+
+    /// Unarchive a note (removes 'archived' tag)
+    Unarchive(UnarchiveArgs),
 }
 
 /// Arguments for the `index` command
@@ -111,6 +117,10 @@ pub struct ListArgs {
     /// Filter by modification date (YYYY-MM-DD or relative like "7d")
     #[arg(long)]
     pub modified: Option<String>,
+
+    /// Include archived notes in results
+    #[arg(short = 'a', long)]
+    pub include_archived: bool,
 }
 
 /// Arguments for the `search` command
@@ -130,6 +140,10 @@ pub struct SearchArgs {
     /// Output format
     #[arg(short = 'f', long, value_enum, default_value_t = OutputFormat::Human)]
     pub format: OutputFormat,
+
+    /// Include archived notes in results
+    #[arg(short = 'a', long)]
+    pub include_archived: bool,
 }
 
 /// Arguments for the `new` command
@@ -301,6 +315,28 @@ pub struct MvArgs {
     /// Remove all topics from the note
     #[arg(long)]
     pub clear_topics: bool,
+
+    /// Output format
+    #[arg(short = 'f', long, value_enum, default_value_t = OutputFormat::Human)]
+    pub format: OutputFormat,
+}
+
+/// Arguments for the `archive` command
+#[derive(Parser, Debug)]
+pub struct ArchiveArgs {
+    /// Note ID or title
+    pub note: String,
+
+    /// Output format
+    #[arg(short = 'f', long, value_enum, default_value_t = OutputFormat::Human)]
+    pub format: OutputFormat,
+}
+
+/// Arguments for the `unarchive` command
+#[derive(Parser, Debug)]
+pub struct UnarchiveArgs {
+    /// Note ID or title
+    pub note: String,
 
     /// Output format
     #[arg(short = 'f', long, value_enum, default_value_t = OutputFormat::Human)]

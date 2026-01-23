@@ -4,6 +4,7 @@ use anyhow::{Context, Result};
 use std::collections::HashSet;
 use std::path::Path;
 
+use super::ARCHIVED_TAG;
 use super::index_db_path;
 use super::list::{note_matches_topic, parse_topic_filter};
 use crate::cli::SearchArgs;
@@ -43,7 +44,13 @@ pub fn handle_search(args: &SearchArgs, notes_dir: &Path) -> Result<()> {
         });
     }
 
-    // 4. Format and output (results already ranked)
+    // 4. Exclude archived unless --include-archived
+    if !args.include_archived {
+        let archived_tag = Tag::new(ARCHIVED_TAG).expect("archived is a valid tag");
+        results.retain(|r| !r.note().tags().contains(&archived_tag));
+    }
+
+    // 5. Format and output (results already ranked)
     format_search_output(&results, args.format, notes_dir)?;
 
     Ok(())
