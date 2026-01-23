@@ -1,7 +1,7 @@
 //! Builder for test notes with sensible defaults.
 
 use chrono::{DateTime, Utc};
-use den::domain::{Note, NoteId, Tag, Topic};
+use den::domain::{Link, Note, NoteId, Tag, Topic};
 
 /// Builder for creating test notes with sensible defaults.
 ///
@@ -16,6 +16,7 @@ pub struct TestNote {
     description: Option<String>,
     topics: Vec<Topic>,
     tags: Vec<Tag>,
+    links: Vec<Link>,
     body: String,
 }
 
@@ -33,6 +34,7 @@ impl TestNote {
             description: None,
             topics: Vec::new(),
             tags: Vec::new(),
+            links: Vec::new(),
             body: String::new(),
         }
     }
@@ -68,6 +70,34 @@ impl TestNote {
         self
     }
 
+    /// Adds a link to another note with the given relationship types.
+    pub fn link(mut self, target_id: impl Into<String>, rels: &[&str]) -> Self {
+        let target: NoteId = target_id
+            .into()
+            .parse()
+            .expect("Invalid target NoteId for link");
+        let link = Link::new(target, rels.to_vec()).expect("Invalid link relationship types");
+        self.links.push(link);
+        self
+    }
+
+    /// Adds a link to another note with relationship types and context note.
+    pub fn link_with_note(
+        mut self,
+        target_id: impl Into<String>,
+        rels: &[&str],
+        note: impl Into<String>,
+    ) -> Self {
+        let target: NoteId = target_id
+            .into()
+            .parse()
+            .expect("Invalid target NoteId for link");
+        let link = Link::with_context(target, rels.to_vec(), note)
+            .expect("Invalid link relationship types");
+        self.links.push(link);
+        self
+    }
+
     /// Returns the 10-character ID prefix.
     pub fn id_prefix(&self) -> String {
         self.id.prefix()
@@ -94,6 +124,7 @@ impl TestNote {
             .description(self.description.clone())
             .topics(self.topics.clone())
             .tags(self.tags.clone())
+            .links(self.links.clone())
             .build()
             .expect("TestNote should always produce valid Note")
     }
@@ -149,5 +180,44 @@ mod tests {
     fn test_note_id_prefix() {
         let note = TestNote::new("Test").id("01HQ3K5M7NXJK4QZPW8V2R6T9Y");
         assert_eq!(note.id_prefix(), "01HQ3K5M7N");
+    }
+
+    // ===========================================
+    // Link Support Tests
+    // ===========================================
+
+    #[test]
+    fn test_note_link_adds_link() {
+        let note = TestNote::new("Test").link("01HQ4A2R9PXJK4QZPW8V2R6T9Y", &["parent"]);
+        let domain_note = note.to_note();
+        assert_eq!(domain_note.links().len(), 1);
+        assert_eq!(domain_note.links()[0].rel()[0].as_str(), "parent");
+    }
+
+    #[test]
+    fn test_note_link_with_multiple_rels() {
+        let note = TestNote::new("Test").link("01HQ4A2R9PXJK4QZPW8V2R6T9Y", &["parent", "mentor"]);
+        let domain_note = note.to_note();
+        assert_eq!(domain_note.links()[0].rel().len(), 2);
+    }
+
+    #[test]
+    fn test_note_link_with_context() {
+        let note = TestNote::new("Test").link_with_note(
+            "01HQ4A2R9PXJK4QZPW8V2R6T9Y",
+            &["see-also"],
+            "Related discussion",
+        );
+        let domain_note = note.to_note();
+        assert_eq!(domain_note.links()[0].context(), Some("Related discussion"));
+    }
+
+    #[test]
+    fn test_note_multiple_links() {
+        let note = TestNote::new("Test")
+            .link("01HQ4A2R9PXJK4QZPW8V2R6T9Y", &["parent"])
+            .link("01HQ5B3S0QYJK5RAQX9W3S7T0Z", &["see-also"]);
+        let domain_note = note.to_note();
+        assert_eq!(domain_note.links().len(), 2);
     }
 }

@@ -97,6 +97,51 @@ impl DenCommand {
         self.args(["topics"])
     }
 
+    /// Configures for the `new` command to create a note.
+    pub fn new_note(self, title: &str) -> Self {
+        self.args(["new", title])
+    }
+
+    /// Configures for the `edit` command.
+    pub fn edit(self, note: &str) -> Self {
+        self.args(["edit", note])
+    }
+
+    /// Configures for the `tag` command (add tag to note).
+    pub fn tag_add(self, note: &str, tag: &str) -> Self {
+        self.args(["tag", note, tag])
+    }
+
+    /// Configures for the `untag` command (remove tag from note).
+    pub fn untag(self, note: &str, tag: &str) -> Self {
+        self.args(["untag", note, tag])
+    }
+
+    /// Configures for the `backlinks` command.
+    pub fn backlinks(self, note: &str) -> Self {
+        self.args(["backlinks", note])
+    }
+
+    /// Configures for the `link` command.
+    pub fn link(self, source: &str, target: &str) -> Self {
+        self.args(["link", source, target])
+    }
+
+    /// Configures for the `unlink` command.
+    pub fn unlink(self, source: &str, target: &str) -> Self {
+        self.args(["unlink", source, target])
+    }
+
+    /// Configures for the `rels` command.
+    pub fn rels(self) -> Self {
+        self.args(["rels"])
+    }
+
+    /// Configures for the `check` command.
+    pub fn check(self) -> Self {
+        self.args(["check"])
+    }
+
     // ===========================================
     // Format Options
     // ===========================================
@@ -109,6 +154,55 @@ impl DenCommand {
     /// Adds `--format paths` to the command.
     pub fn format_paths(self) -> Self {
         self.args(["--format", "paths"])
+    }
+
+    // ===========================================
+    // Option Modifiers
+    // ===========================================
+
+    /// Adds `--rel <type>` to the command.
+    pub fn with_rel(self, rel: &str) -> Self {
+        self.args(["--rel", rel])
+    }
+
+    /// Adds `--counts` to the command.
+    pub fn with_counts(self) -> Self {
+        self.args(["--counts"])
+    }
+
+    /// Adds `--tag <tag>` to the command.
+    pub fn with_tag(self, tag: &str) -> Self {
+        self.args(["--tag", tag])
+    }
+
+    /// Adds `--topic <topic>` to the command (for search).
+    pub fn with_topic(self, topic: &str) -> Self {
+        self.args(["--topic", topic])
+    }
+
+    /// Adds `--full` to the command.
+    pub fn with_full(self) -> Self {
+        self.args(["--full"])
+    }
+
+    /// Adds `--desc <description>` to the command.
+    pub fn with_desc(self, desc: &str) -> Self {
+        self.args(["--desc", desc])
+    }
+
+    /// Adds `--note <context>` to the command.
+    pub fn with_note(self, note: &str) -> Self {
+        self.args(["--note", note])
+    }
+
+    /// Adds `--created <date>` to the command.
+    pub fn with_created(self, date: &str) -> Self {
+        self.args(["--created", date])
+    }
+
+    /// Adds `--modified <date>` to the command.
+    pub fn with_modified(self, date: &str) -> Self {
+        self.args(["--modified", date])
     }
 }
 
