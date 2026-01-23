@@ -159,7 +159,7 @@ mod tests {
 
     fn test_note_with_topics(id_str: &str, topics: Vec<&str>) -> Note {
         let id: NoteId = id_str.parse().unwrap();
-        let ts: Vec<Topic> = topics.iter().map(|t| Topic::new(*t).unwrap()).collect();
+        let ts: Vec<Topic> = topics.iter().map(|t| Topic::new(t).unwrap()).collect();
         Note::builder(id, "Test", test_datetime(), test_datetime())
             .topics(ts)
             .build()
@@ -211,7 +211,7 @@ mod tests {
         link_targets: Vec<NoteId>,
     ) -> Note {
         let id: NoteId = id_str.parse().unwrap();
-        let ts: Vec<Topic> = topics.iter().map(|t| Topic::new(*t).unwrap()).collect();
+        let ts: Vec<Topic> = topics.iter().map(|t| Topic::new(t).unwrap()).collect();
         let links: Vec<Link> = link_targets
             .into_iter()
             .map(|t| Link::new(t, vec!["see-also"]).unwrap())

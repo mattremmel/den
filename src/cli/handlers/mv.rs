@@ -41,10 +41,10 @@ pub fn validate_mv_args(args: &MvArgs) -> Result<()> {
     }
 
     // --title must not be empty if specified
-    if let Some(ref title) = args.title {
-        if title.trim().is_empty() {
-            bail!("--title cannot be empty");
-        }
+    if let Some(ref title) = args.title
+        && title.trim().is_empty()
+    {
+        bail!("--title cannot be empty");
     }
 
     Ok(())
@@ -103,7 +103,11 @@ pub fn handle_mv(args: &MvArgs, notes_dir: &Path) -> Result<()> {
                 let path_str = indexed_note.path().to_string_lossy();
                 match args.format {
                     OutputFormat::Human => {
-                        println!("No changes needed for '{}' [{}]", new_title, indexed_note.id());
+                        println!(
+                            "No changes needed for '{}' [{}]",
+                            new_title,
+                            indexed_note.id()
+                        );
                     }
                     OutputFormat::Json => {
                         let result = MvResult {
@@ -149,8 +153,9 @@ pub fn handle_mv(args: &MvArgs, notes_dir: &Path) -> Result<()> {
 
             // Delete old file if renamed (different path)
             if old_path != new_path {
-                std::fs::remove_file(&old_path)
-                    .with_context(|| format!("failed to remove old file: {}", old_path.display()))?;
+                std::fs::remove_file(&old_path).with_context(|| {
+                    format!("failed to remove old file: {}", old_path.display())
+                })?;
             }
 
             // Update index
@@ -172,9 +177,14 @@ pub fn handle_mv(args: &MvArgs, notes_dir: &Path) -> Result<()> {
                     }
                     if !topics_unchanged {
                         if new_topics.is_empty() {
-                            println!("Cleared topics from '{}' [{}]", new_title, updated_note.id().prefix());
+                            println!(
+                                "Cleared topics from '{}' [{}]",
+                                new_title,
+                                updated_note.id().prefix()
+                            );
                         } else {
-                            let topic_strs: Vec<_> = new_topics.iter().map(|t| t.to_string()).collect();
+                            let topic_strs: Vec<_> =
+                                new_topics.iter().map(|t| t.to_string()).collect();
                             println!(
                                 "Moved '{}' to {} [{}]",
                                 new_title,
@@ -223,12 +233,7 @@ mod tests {
     use super::*;
     use crate::cli::output::OutputFormat;
 
-    fn make_args(
-        note: &str,
-        title: Option<&str>,
-        topics: Vec<&str>,
-        clear_topics: bool,
-    ) -> MvArgs {
+    fn make_args(note: &str, title: Option<&str>, topics: Vec<&str>, clear_topics: bool) -> MvArgs {
         MvArgs {
             note: note.to_string(),
             title: title.map(|s| s.to_string()),
@@ -247,10 +252,12 @@ mod tests {
         let args = make_args("some-note", None, vec![], false);
         let result = validate_mv_args(&args);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("at least one of --title, --topic, or --clear-topics"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("at least one of --title, --topic, or --clear-topics")
+        );
     }
 
     #[test]
@@ -258,10 +265,12 @@ mod tests {
         let args = make_args("some-note", None, vec!["software"], true);
         let result = validate_mv_args(&args);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("mutually exclusive"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("mutually exclusive")
+        );
     }
 
     #[test]
