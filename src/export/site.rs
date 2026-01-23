@@ -24,20 +24,20 @@ pub const DEFAULT_INDEX_TEMPLATE: &str = r##"<!DOCTYPE html>
 <body>
     <header>
         <h1>{{ site_title }}</h1>
-        <p class="note-count">{{ notes | length }} notes</p>
+        <p class="note-count">{{ notes | length }} note{% if notes | length != 1 %}s{% endif %}</p>
     </header>
     <main>
         {% if topics %}
-        <nav class="topics-nav">
+        <nav class="topics-nav" aria-label="Browse by topic">
             <h2>Topics</h2>
             <ul>
             {% for topic in topics %}
-                <li><a href="{{ topic.path }}/index.html">{{ topic.name }}</a> ({{ topic.count }})</li>
+                <li><a href="{{ topic.path }}/index.html">{{ topic.name }} <span class="count">({{ topic.count }})</span></a></li>
             {% endfor %}
             </ul>
         </nav>
         {% endif %}
-        <section class="notes-list">
+        <section class="notes-list" aria-label="All notes">
             <h2>All Notes</h2>
             <ul>
             {% for note in notes %}
@@ -49,6 +49,9 @@ pub const DEFAULT_INDEX_TEMPLATE: &str = r##"<!DOCTYPE html>
             </ul>
         </section>
     </main>
+    <footer>
+        <p>Generated with den</p>
+    </footer>
 </body>
 </html>"##;
 
@@ -63,27 +66,28 @@ pub const DEFAULT_TOPIC_TEMPLATE: &str = r##"<!DOCTYPE html>
 </head>
 <body>
     <header>
-        <nav class="breadcrumb">
+        <nav class="breadcrumb" aria-label="Breadcrumb">
             <a href="{{ root_path }}index.html">Home</a>
             {% for crumb in breadcrumbs %}
-            / <a href="{{ crumb.path }}">{{ crumb.name }}</a>
+            <span aria-hidden="true">/</span>
+            <a href="{{ crumb.path }}">{{ crumb.name }}</a>
             {% endfor %}
         </nav>
         <h1>{{ topic }}</h1>
-        <p class="note-count">{{ notes | length }} notes</p>
+        <p class="note-count">{{ notes | length }} note{% if notes | length != 1 %}s{% endif %}</p>
     </header>
     <main>
         {% if subtopics %}
-        <nav class="subtopics">
+        <nav class="subtopics" aria-label="Subtopics">
             <h2>Subtopics</h2>
             <ul>
             {% for sub in subtopics %}
-                <li><a href="{{ sub.path }}/index.html">{{ sub.name }}</a> ({{ sub.count }})</li>
+                <li><a href="{{ sub.path }}/index.html">{{ sub.name }} <span class="count">({{ sub.count }})</span></a></li>
             {% endfor %}
             </ul>
         </nav>
         {% endif %}
-        <section class="notes-list">
+        <section class="notes-list" aria-label="Notes in this topic">
             <h2>Notes</h2>
             <ul>
             {% for note in notes %}
@@ -95,10 +99,19 @@ pub const DEFAULT_TOPIC_TEMPLATE: &str = r##"<!DOCTYPE html>
             </ul>
         </section>
     </main>
+    <footer>
+        <a href="{{ root_path }}index.html">&larr; Back to index</a>
+    </footer>
 </body>
 </html>"##;
 
 /// Default template for individual note pages in a site.
+///
+/// Features:
+/// - Semantic HTML structure
+/// - highlight.js for syntax highlighting (auto light/dark via media queries)
+/// - Breadcrumb navigation back to topics
+/// - Clean typography and metadata display
 pub const DEFAULT_SITE_NOTE_TEMPLATE: &str = r##"<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -106,39 +119,47 @@ pub const DEFAULT_SITE_NOTE_TEMPLATE: &str = r##"<!DOCTYPE html>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{{ title }} - {{ site_title }}</title>
     <link rel="stylesheet" href="style.css">
+    <!-- Syntax highlighting: GitHub theme with automatic light/dark switching -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css" media="(prefers-color-scheme: light), (prefers-color-scheme: no-preference)">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css" media="(prefers-color-scheme: dark)">
 </head>
 <body>
-    <header>
-        <nav class="breadcrumb">
-            <a href="index.html">Home</a>
-            {% for topic in topics %}
-            / <a href="{{ topic.path }}/index.html">{{ topic.name }}</a>
-            {% endfor %}
-        </nav>
-    </header>
     <article>
         <header>
+            <nav class="breadcrumb" aria-label="Breadcrumb">
+                <a href="index.html">Home</a>
+                {% for topic in topics %}
+                <span aria-hidden="true">/</span>
+                <a href="{{ topic.path }}/index.html">{{ topic.name }}</a>
+                {% endfor %}
+            </nav>
             <h1>{{ title }}</h1>
             {% if description %}
             <p class="description">{{ description }}</p>
             {% endif %}
             {% if tags %}
-            <div class="tags">
-                {% for tag in tags %}<span class="tag">{{ tag }}</span>{% endfor %}
+            <div class="tags" role="list" aria-label="Tags">
+                {% for tag in tags %}<span class="tag" role="listitem">{{ tag }}</span>{% endfor %}
             </div>
             {% endif %}
             <div class="metadata">
                 <time datetime="{{ created_iso }}">{{ created }}</time>
                 {% if modified != created %}
-                · Updated <time datetime="{{ modified_iso }}">{{ modified }}</time>
+                <span aria-hidden="true"> · </span>
+                <span>Updated <time datetime="{{ modified_iso }}">{{ modified }}</time></span>
                 {% endif %}
             </div>
         </header>
-        <main>{{ content }}</main>
+        <main>
+            {{ content }}
+        </main>
     </article>
     <footer>
-        <a href="index.html">← Back to index</a>
+        <a href="index.html">&larr; Back to index</a>
     </footer>
+    <!-- Syntax highlighting initialization -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
 </body>
 </html>"##;
 
@@ -547,6 +568,8 @@ mod tests {
         generate_site(&[indexed], temp_dir.path(), notes_dir.path(), &config).unwrap();
 
         let css_content = std::fs::read_to_string(temp_dir.path().join("style.css")).unwrap();
-        assert!(css_content.contains("#1a1a1a")); // Dark theme color
+        // Unified theme with CSS custom properties and automatic dark mode
+        assert!(css_content.contains("--color-bg: #0d1117")); // Dark mode background in media query
+        assert!(css_content.contains("prefers-color-scheme: dark"));
     }
 }

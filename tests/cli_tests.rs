@@ -2462,12 +2462,14 @@ mod export_tests {
         env.add_note(&note);
         env.build_index().expect("Should build index");
 
+        // Dark theme now returns unified CSS with automatic light/dark switching
         env.cmd()
             .export("Dark Theme Test")
             .with_theme("dark")
             .assert()
             .success()
-            .stdout(predicate::str::contains("#1a1a1a")); // Dark theme background
+            .stdout(predicate::str::contains("prefers-color-scheme: dark"))
+            .stdout(predicate::str::contains("--color-bg: #0d1117")); // Dark mode background
     }
 
     #[test]

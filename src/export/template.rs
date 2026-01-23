@@ -10,6 +10,12 @@ use crate::export::html::markdown_to_html;
 use crate::export::theme::get_theme_css;
 
 /// Default HTML template for single note export.
+///
+/// Features:
+/// - Semantic HTML structure with article, header, main
+/// - highlight.js for syntax highlighting (auto light/dark via media queries)
+/// - Clean typography hierarchy
+/// - Responsive design
 pub const DEFAULT_NOTE_TEMPLATE: &str = r##"<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -17,33 +23,42 @@ pub const DEFAULT_NOTE_TEMPLATE: &str = r##"<!DOCTYPE html>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{{ title }}</title>
     <style>{{ theme_css }}</style>
+    <!-- Syntax highlighting: GitHub theme with automatic light/dark switching -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css" media="(prefers-color-scheme: light), (prefers-color-scheme: no-preference)">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css" media="(prefers-color-scheme: dark)">
 </head>
 <body>
     <article>
         <header>
+            {% if topics %}
+            <nav class="topics" aria-label="Topics">
+                {% for topic in topics %}<a href="#">{{ topic }}</a>{% endfor %}
+            </nav>
+            {% endif %}
             <h1>{{ title }}</h1>
             {% if description %}
             <p class="description">{{ description }}</p>
             {% endif %}
-            {% if topics %}
-            <nav class="topics">
-                {% for topic in topics %}<a href="#">{{ topic }}</a>{% endfor %}
-            </nav>
-            {% endif %}
             {% if tags %}
-            <div class="tags">
-                {% for tag in tags %}<span class="tag">{{ tag }}</span>{% endfor %}
+            <div class="tags" role="list" aria-label="Tags">
+                {% for tag in tags %}<span class="tag" role="listitem">{{ tag }}</span>{% endfor %}
             </div>
             {% endif %}
             <div class="metadata">
                 <time datetime="{{ created_iso }}">{{ created }}</time>
                 {% if modified != created %}
-                · Updated <time datetime="{{ modified_iso }}">{{ modified }}</time>
+                <span aria-hidden="true"> · </span>
+                <span>Updated <time datetime="{{ modified_iso }}">{{ modified }}</time></span>
                 {% endif %}
             </div>
         </header>
-        <main>{{ content }}</main>
+        <main>
+            {{ content }}
+        </main>
     </article>
+    <!-- Syntax highlighting initialization -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
 </body>
 </html>"##;
 
@@ -237,7 +252,9 @@ mod tests {
 
         let html = render_note_html(&note, body, &options).unwrap();
 
-        assert!(html.contains("#1a1a1a")); // Dark theme background color
+        // Unified theme with CSS custom properties and automatic dark mode
+        assert!(html.contains("--color-bg"));
+        assert!(html.contains("prefers-color-scheme"));
     }
 
     #[test]
