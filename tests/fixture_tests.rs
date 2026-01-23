@@ -6,7 +6,7 @@
 mod common;
 
 use common::{fixtures_dir, invalid_fixture, read_fixture, valid_fixture};
-use den::infra::{parse, ParseError};
+use den::infra::{ParseError, parse};
 use pretty_assertions::assert_eq;
 
 // ===========================================
@@ -176,10 +176,18 @@ fn parse_body_with_dashes_fixture() {
     assert_eq!(result.note.title(), "Body With Dashes");
 
     // Triple dashes followed by text should not be treated as delimiter
-    assert!(result.body.contains("--- This line starts with three dashes"));
+    assert!(
+        result
+            .body
+            .contains("--- This line starts with three dashes")
+    );
 
     // Horizontal rule (standalone ---) in body should be preserved
-    assert!(result.body.contains("More content after the horizontal rule"));
+    assert!(
+        result
+            .body
+            .contains("More content after the horizontal rule")
+    );
 
     // Four dashes should be fine
     assert!(result.body.contains("---- Four dashes"));

@@ -99,10 +99,12 @@ impl FromStr for NoteId {
     type Err = ParseNoteIdError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ulid::from_string(s).map(NoteId).map_err(|e| ParseNoteIdError {
-            value: s.to_string(),
-            reason: e.to_string(),
-        })
+        Ulid::from_string(s)
+            .map(NoteId)
+            .map_err(|e| ParseNoteIdError {
+                value: s.to_string(),
+                reason: e.to_string(),
+            })
     }
 }
 

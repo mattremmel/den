@@ -70,7 +70,11 @@ impl fmt::Display for ParseTopicError {
         match self.kind {
             ParseTopicErrorKind::Empty => write!(f, "invalid topic: path cannot be empty"),
             ParseTopicErrorKind::EmptySegment => {
-                write!(f, "invalid topic '{}': segments cannot be empty or whitespace-only", self.value)
+                write!(
+                    f,
+                    "invalid topic '{}': segments cannot be empty or whitespace-only",
+                    self.value
+                )
             }
             ParseTopicErrorKind::InvalidSegment => {
                 if let Some(ref seg) = self.segment {

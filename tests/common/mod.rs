@@ -1,5 +1,7 @@
 //! Test fixture utilities for integration tests.
 
+pub mod harness;
+
 use std::path::{Path, PathBuf};
 
 /// Returns the path to the fixtures directory.
