@@ -16,7 +16,7 @@ pub fn handle_vaults(args: &VaultsArgs, config: &Config) -> Result<()> {
             if vaults.is_empty() {
                 println!("No vaults configured.");
                 println!();
-                println!("Add vaults to your config file (~/.config/den/config.toml):");
+                println!("Add vaults to your config file (~/.config/notes/config.toml):");
                 println!();
                 println!("  [vaults]");
                 println!("  personal = \"/path/to/personal/notes\"");

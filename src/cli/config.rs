@@ -51,11 +51,11 @@ impl Config {
 
     /// Returns the path to the config file.
     ///
-    /// Default: `~/.config/den/config.toml`
+    /// Default: `~/.config/notes/config.toml`
     pub fn config_path() -> PathBuf {
         dirs::config_dir()
             .unwrap_or_else(|| PathBuf::from("."))
-            .join("den")
+            .join("notes")
             .join("config.toml")
     }
 
@@ -236,7 +236,7 @@ mod tests {
     #[test]
     fn config_path_is_in_config_dir() {
         let path = Config::config_path();
-        assert!(path.ends_with("den/config.toml"));
+        assert!(path.ends_with("notes/config.toml"));
     }
 
     #[test]

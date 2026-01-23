@@ -3665,7 +3665,7 @@ fn completions_generates_bash_script() {
     let mut output = Vec::new();
     generate_completions(Shell::Bash, &mut output).unwrap();
     let script = String::from_utf8(output).unwrap();
-    assert!(script.contains("_den"));
+    assert!(script.contains("_notes"));
     assert!(script.contains("complete"));
 }
 
@@ -3677,7 +3677,7 @@ fn completions_generates_zsh_script() {
     let mut output = Vec::new();
     generate_completions(Shell::Zsh, &mut output).unwrap();
     let script = String::from_utf8(output).unwrap();
-    assert!(script.contains("#compdef den"));
+    assert!(script.contains("#compdef notes"));
 }
 
 #[test]
@@ -3688,5 +3688,5 @@ fn completions_generates_fish_script() {
     let mut output = Vec::new();
     generate_completions(Shell::Fish, &mut output).unwrap();
     let script = String::from_utf8(output).unwrap();
-    assert!(script.contains("complete -c den"));
+    assert!(script.contains("complete -c notes"));
 }

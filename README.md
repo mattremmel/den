@@ -1,6 +1,6 @@
-# den
+# Den
 
-A command-line tool for managing markdown notes with virtual folder organization through hierarchical topics.
+A command-line tool (`notes`) for managing markdown notes with virtual folder organization through hierarchical topics.
 
 Notes are stored as flat markdown files with YAML frontmatter. Organization happens through metadata (topics and tags), not filesystem hierarchy. A SQLite index provides fast querying and full-text search.
 
@@ -14,7 +14,7 @@ Or build from source:
 
 ```bash
 cargo build --release
-# Binary will be at target/release/den
+# Binary will be at target/release/notes
 ```
 
 ### Shell Completions
@@ -23,22 +23,22 @@ Generate and install shell completions for tab-completion of commands and option
 
 ```bash
 # Bash (add to ~/.bashrc)
-den completions bash > ~/.local/share/bash-completion/completions/den
+notes completions bash > ~/.local/share/bash-completion/completions/notes
 
 # Zsh (add to fpath directory)
-den completions zsh > ~/.zfunc/_den
+notes completions zsh > ~/.zfunc/_notes
 
 # Fish
-den completions fish > ~/.config/fish/completions/den.fish
+notes completions fish > ~/.config/fish/completions/notes.fish
 ```
 
 ## Configuration
 
-den uses a TOML configuration file located at:
+notes uses a TOML configuration file located at:
 
-- **macOS**: `~/.config/den/config.toml`
-- **Linux**: `~/.config/den/config.toml`
-- **Windows**: `%APPDATA%\den\config.toml`
+- **macOS**: `~/.config/notes/config.toml`
+- **Linux**: `~/.config/notes/config.toml`
+- **Windows**: `%APPDATA%\notes\config.toml`
 
 ### Configuration Options
 
@@ -74,22 +74,22 @@ The editor setting supports arguments, e.g., `editor = "code --wait"` for VS Cod
 ```bash
 # Set up your notes directory
 mkdir ~/notes
-echo 'dir = "/Users/me/notes"' > ~/.config/den/config.toml
+echo 'dir = "/Users/me/notes"' > ~/.config/notes/config.toml
 
 # Create your first note
-den new "Getting Started with den" --topic meta --tag reference --edit
+notes new "Getting Started" --topic meta --tag reference --edit
 
 # Build the index
-den index
+notes index
 
 # List all notes
-den ls
+notes ls
 
 # Search for content
-den search "getting started"
+notes search "getting started"
 
 # Edit an existing note
-den edit "Getting Started"
+notes edit "Getting Started"
 ```
 
 ## Commands
@@ -100,10 +100,10 @@ Before using search and list commands, build the index:
 
 ```bash
 # Incremental update (fast, only processes changed files)
-den index
+notes index
 
 # Full rebuild (slower, rescans everything)
-den index --full
+notes index --full
 ```
 
 The index is stored at `.index/notes.db` in your notes directory.
@@ -112,53 +112,53 @@ The index is stored at `.index/notes.db` in your notes directory.
 
 ```bash
 # Create a basic note
-den new "My Note Title"
+notes new "My Note Title"
 
 # Create with topic and tags
-den new "API Design" --topic software/architecture --tag draft
+notes new "API Design" --topic software/architecture --tag draft
 
 # Create with description
-den new "Meeting Notes" --desc "Weekly team sync"
+notes new "Meeting Notes" --desc "Weekly team sync"
 
 # Create and open in editor
-den new "Quick Idea" --edit
+notes new "Quick Idea" --edit
 
 # Multiple topics and tags
-den new "Rust Async" --topic software/rust --topic reference --tag important --tag draft
+notes new "Rust Async" --topic software/rust --topic reference --tag important --tag draft
 ```
 
 ### Listing Notes
 
 ```bash
 # List all notes (sorted by modified date, most recent first)
-den ls
+notes ls
 
 # List notes in a specific topic
-den ls software/rust
+notes ls software/rust
 
 # List notes in topic and all descendants (trailing /)
-den ls software/
+notes ls software/
 
 # Filter by tag
-den ls --tag draft
+notes ls --tag draft
 
 # Multiple tags (AND logic)
-den ls --tag draft --tag important
+notes ls --tag draft --tag important
 
 # Combine topic and tags
-den ls software/rust --tag reference
+notes ls software/rust --tag reference
 
 # Filter by date
-den ls --created 2024-01-15      # Exact date
-den ls --modified 7d             # Last 7 days
-den ls --created 30d --tag draft # Combined filters
+notes ls --created 2024-01-15      # Exact date
+notes ls --modified 7d             # Last 7 days
+notes ls --created 30d --tag draft # Combined filters
 
 # Output formats
-den ls --format json             # JSON output
-den ls --format paths            # Just file paths (useful for scripting)
+notes ls --format json             # JSON output
+notes ls --format paths            # Just file paths (useful for scripting)
 
 # Include archived notes
-den ls -a                        # Show all including archived
+notes ls -a                        # Show all including archived
 ```
 
 ### Searching Notes
@@ -167,33 +167,33 @@ Full-text search across titles, descriptions, aliases, and body content:
 
 ```bash
 # Basic search
-den search "API design"
+notes search "API design"
 
 # Search within a topic
-den search "async" --topic software/rust
+notes search "async" --topic software/rust
 
 # Search with tag filter
-den search "error handling" --tag reference
+notes search "error handling" --tag reference
 
 # Output formats
-den search "query" --format json
-den search "query" --format paths
+notes search "query" --format json
+notes search "query" --format paths
 
 # Include archived notes
-den search "query" -a
+notes search "query" -a
 ```
 
 ### Viewing and Editing Notes
 
 ```bash
 # Show a note (by ID prefix, title, or alias)
-den show 01HQ3K5M7N
-den show "API Design"
-den show REST            # If "REST" is an alias
+notes show 01HQ3K5M7N
+notes show "API Design"
+notes show REST            # If "REST" is an alias
 
 # Edit a note
-den edit 01HQ3K5M7N
-den edit "API Design"
+notes edit 01HQ3K5M7N
+notes edit "API Design"
 ```
 
 Notes can be referenced by:
@@ -205,17 +205,17 @@ Notes can be referenced by:
 
 ```bash
 # Rename a note (updates title and filename)
-den mv "Old Title" --title "New Title"
+notes mv "Old Title" --title "New Title"
 
 # Change topics
-den mv "My Note" --topic new/topic
-den mv "My Note" --topic topic1 --topic topic2   # Multiple topics
+notes mv "My Note" --topic new/topic
+notes mv "My Note" --topic topic1 --topic topic2   # Multiple topics
 
 # Clear all topics
-den mv "My Note" --clear-topics
+notes mv "My Note" --clear-topics
 
 # Rename and reorganize in one command
-den mv "My Note" --title "Better Name" --topic projects/active
+notes mv "My Note" --title "Better Name" --topic projects/active
 ```
 
 ### Archiving Notes
@@ -224,37 +224,37 @@ Archive notes to hide them from default listings while preserving them:
 
 ```bash
 # Archive a note
-den archive "Old Project Notes"
+notes archive "Old Project Notes"
 
 # Unarchive a note
-den unarchive "Old Project Notes"
+notes unarchive "Old Project Notes"
 
-# Archived notes are hidden by default
-den ls                       # Won't show archived notes
-den ls -a                    # Include archived notes
-den search "query" -a        # Include archived in search
+# Archived notes are hidnotes by default
+notes ls                       # Won't show archived notes
+notes ls -a                    # Include archived notes
+notes search "query" -a        # Include archived in search
 ```
 
 ### Topics and Tags
 
 ```bash
 # List all topics
-den topics
-den topics --counts      # With note counts
-den topics --format json
+notes topics
+notes topics --counts      # With note counts
+notes topics --format json
 
 # List all tags
-den tags
-den tags --counts        # With note counts
-den tags --format json
+notes tags
+notes tags --counts        # With note counts
+notes tags --format json
 
 # Add a tag to a note
-den tag "API Design" important
-den tag 01HQ3K5M7N review
+notes tag "API Design" important
+notes tag 01HQ3K5M7N review
 
 # Remove a tag from a note
-den untag "API Design" draft
-den untag 01HQ3K5M7N obsolete
+notes untag "API Design" draft
+notes untag 01HQ3K5M7N obsolete
 ```
 
 ### Link Management
@@ -263,25 +263,25 @@ Create typed relationships between notes:
 
 ```bash
 # Create a link with relationship type
-den link "API Design" "REST Principles" --rel parent
+notes link "API Design" "REST Principles" --rel parent
 
 # Create a link with multiple relationship types
-den link "My Project" "Reference Doc" --rel source --rel inspiration
+notes link "My Project" "Reference Doc" --rel source --rel inspiration
 
 # Create a link with context note
-den link "Meeting Notes" "Action Items" --rel followed-by --note "Discussed in Q4 planning"
+notes link "Meeting Notes" "Action Items" --rel followed-by --note "Discussed in Q4 planning"
 
 # Remove a link
-den unlink "API Design" "REST Principles"
+notes unlink "API Design" "REST Principles"
 
 # Show notes that link to a given note (backlinks)
-den backlinks "REST Principles"
-den backlinks "REST Principles" --rel parent    # Filter by relationship type
-den backlinks "REST Principles" --format json
+notes backlinks "REST Principles"
+notes backlinks "REST Principles" --rel parent    # Filter by relationship type
+notes backlinks "REST Principles" --format json
 
 # List all relationship types in use
-den rels
-den rels --counts        # With usage counts
+notes rels
+notes rels --counts        # With usage counts
 ```
 
 ### Validation
@@ -290,10 +290,10 @@ Check your notes collection for issues:
 
 ```bash
 # Check for problems (broken links, orphans, etc.)
-den check
+notes check
 
 # Attempt to fix issues automatically
-den check --fix
+notes check --fix
 ```
 
 ### Exporting Notes
@@ -302,24 +302,24 @@ Export notes to HTML or generate a static site:
 
 ```bash
 # Export a single note to HTML (outputs to stdout)
-den export "API Design"
+notes export "API Design"
 
 # Export to a file
-den export "API Design" -o api-design.html
+notes export "API Design" -o api-design.html
 
 # Export with dark theme
-den export "API Design" --theme dark -o api-design.html
+notes export "API Design" --theme dark -o api-design.html
 
 # Export all notes as a static site
-den export --all --format site -o ./my-site
+notes export --all --format site -o ./my-site
 
 # Export with resolved internal links (note references become clickable)
-den export "API Design" --resolve-links -o api-design.html
+notes export "API Design" --resolve-links -o api-design.html
 
 # Filter what to export
-den export --all -F site -o ./docs --topic software/   # Only software notes
-den export --all -F site -o ./docs --tag reference     # Only reference notes
-den export --all -F site -o ./docs -a                  # Include archived notes
+notes export --all -F site -o ./docs --topic software/   # Only software notes
+notes export --all -F site -o ./docs --tag reference     # Only reference notes
+notes export --all -F site -o ./docs -a                  # Include archived notes
 ```
 
 Export formats:
@@ -366,7 +366,7 @@ Your markdown content goes here...
 
 | Field | Required | Description |
 |-------|----------|-------------|
-| `id` | Yes | ULID identifier (auto-generated) |
+| `id` | Yes | ULID inotestifier (auto-generated) |
 | `title` | Yes | Human-readable title |
 | `created` | Yes | Creation timestamp (ISO 8601) |
 | `modified` | Yes | Last modified timestamp (ISO 8601) |
@@ -395,15 +395,15 @@ This ensures uniqueness while remaining human-readable.
 
 ```bash
 # Specify notes directory
-den --dir /path/to/notes ls
+notes --dir /path/to/notes ls
 
 # Increase verbosity
-den -v index          # Verbose
-den -vv index         # More verbose
-den -vvv index        # Debug level
+notes -v index          # Verbose
+notes -vv index         # More verbose
+notes -vvv index        # Debug level
 
 # Version
-den --version
+notes --version
 ```
 
 ## Example Workflows
@@ -412,56 +412,56 @@ den --version
 
 ```bash
 # Create topic structure through notes
-den new "Rust Overview" --topic programming/rust --tag evergreen
-den new "Ownership in Rust" --topic programming/rust/concepts --tag reference
-den new "Async Rust" --topic programming/rust/async --tag draft
+notes new "Rust Overview" --topic programming/rust --tag evergreen
+notes new "Ownership in Rust" --topic programming/rust/concepts --tag reference
+notes new "Async Rust" --topic programming/rust/async --tag draft
 
 # Link related notes
-den link "Ownership in Rust" "Rust Overview" --rel parent
-den link "Async Rust" "Ownership in Rust" --rel prerequisite
+notes link "Ownership in Rust" "Rust Overview" --rel parent
+notes link "Async Rust" "Ownership in Rust" --rel prerequisite
 
 # Browse by topic
-den ls programming/rust/     # All Rust notes including subtopics
-den topics --counts          # See topic hierarchy
+notes ls programming/rust/     # All Rust notes including subtopics
+notes topics --counts          # See topic hierarchy
 
 # Find what links to a concept
-den backlinks "Ownership in Rust"
+notes backlinks "Ownership in Rust"
 ```
 
 ### Project Notes
 
 ```bash
 # Create project notes
-den new "Project Alpha" --topic projects/alpha --tag active
-den new "Alpha Meeting 2024-01-15" --topic projects/alpha/meetings
-den new "Alpha Architecture" --topic projects/alpha --tag decision
+notes new "Project Alpha" --topic projects/alpha --tag active
+notes new "Alpha Meeting 2024-01-15" --topic projects/alpha/meetings
+notes new "Alpha Architecture" --topic projects/alpha --tag decision
 
 # Link meeting to project
-den link "Alpha Meeting 2024-01-15" "Project Alpha" --rel part-of
+notes link "Alpha Meeting 2024-01-15" "Project Alpha" --rel part-of
 
 # Find all project notes
-den ls projects/alpha/
+notes ls projects/alpha/
 
 # Search within project
-den search "deadline" --topic projects/alpha
+notes search "deadline" --topic projects/alpha
 ```
 
 ### Research and References
 
 ```bash
 # Create reference notes
-den new "Clean Architecture" --topic reference/books --tag evergreen
-den new "Domain-Driven Design" --topic reference/books --tag evergreen
+notes new "Clean Architecture" --topic reference/books --tag evergreen
+notes new "Domain-Driven Design" --topic reference/books --tag evergreen
 
 # Add relationship between concepts
-den link "Clean Architecture" "Domain-Driven Design" --rel see-also --note "Complementary approaches"
+notes link "Clean Architecture" "Domain-Driven Design" --rel see-also --note "Complementary approaches"
 
 # Tag notes as you review them
-den tag "Clean Architecture" reviewed
-den untag "Clean Architecture" to-read
+notes tag "Clean Architecture" reviewed
+notes untag "Clean Architecture" to-read
 
 # Find all references
-den ls reference/ --tag evergreen
+notes ls reference/ --tag evergreen
 ```
 
 ## License

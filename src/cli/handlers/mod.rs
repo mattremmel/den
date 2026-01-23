@@ -44,7 +44,7 @@ pub use vaults::handle_vaults;
 /// Generate shell completions script for the given shell.
 pub fn generate_completions<W: std::io::Write>(shell: Shell, out: &mut W) -> Result<()> {
     let mut cmd = Cli::command();
-    generate(shell, &mut cmd, "den", out);
+    generate(shell, &mut cmd, "notes", out);
     Ok(())
 }
 

@@ -11,9 +11,9 @@ use std::path::PathBuf;
 
 use output::OutputFormat;
 
-/// den - markdown notes with virtual folder organization
+/// Markdown notes with virtual folder organization
 #[derive(Parser, Debug)]
-#[command(name = "den", version, about, long_about = None)]
+#[command(name = "notes", version, about, long_about = None)]
 pub struct Cli {
     /// Notes directory (overrides config file and vault)
     #[arg(short = 'd', long, global = true)]

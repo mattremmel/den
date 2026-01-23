@@ -4,9 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is **den** (working name: notes-cli), a Rust CLI tool for managing markdown notes with virtual folder organization through hierarchical topics. Notes are stored as flat markdown files with YAML frontmatter; organization happens through metadata, not filesystem hierarchy.
-
-The project is currently in the design/specification phase with no implementation yet.
+This is **Den**, a Rust CLI tool (`notes`) for managing markdown notes with virtual folder organization through hierarchical topics. Notes are stored as flat markdown files with YAML frontmatter; organization happens through metadata, not filesystem hierarchy.
 
 ## Architecture
 
