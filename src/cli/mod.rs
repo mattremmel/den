@@ -86,6 +86,9 @@ pub enum Command {
 
     /// Unarchive a note (removes 'archived' tag)
     Unarchive(UnarchiveArgs),
+
+    /// Export notes to HTML, PDF, or static site
+    Export(ExportArgs),
 }
 
 /// Arguments for the `index` command
@@ -341,4 +344,64 @@ pub struct UnarchiveArgs {
     /// Output format
     #[arg(short = 'f', long, value_enum, default_value_t = OutputFormat::Human)]
     pub format: OutputFormat,
+}
+
+/// Export format for the `export` command
+#[derive(Clone, Debug, Default, clap::ValueEnum)]
+pub enum ExportFormat {
+    /// HTML document
+    #[default]
+    Html,
+    /// PDF document (requires wkhtmltopdf or weasyprint)
+    Pdf,
+    /// Static site with navigation
+    Site,
+}
+
+/// Arguments for the `export` command
+#[derive(Parser, Debug)]
+pub struct ExportArgs {
+    /// Note to export (ID prefix or title). Required unless --all is used.
+    #[arg(required_unless_present = "all")]
+    pub note: Option<String>,
+
+    /// Export all notes
+    #[arg(long, conflicts_with = "note")]
+    pub all: bool,
+
+    /// Export format
+    #[arg(short = 'F', long = "format", value_enum, default_value_t = ExportFormat::Html)]
+    pub export_format: ExportFormat,
+
+    /// Output path (stdout if not specified for single note)
+    #[arg(short, long)]
+    pub output: Option<PathBuf>,
+
+    /// Custom template file
+    #[arg(long)]
+    pub template: Option<PathBuf>,
+
+    /// CSS theme (default, dark, or path to CSS file)
+    #[arg(long)]
+    pub theme: Option<String>,
+
+    /// Filter by topic (trailing / includes descendants)
+    #[arg(short = 'T', long)]
+    pub topic: Option<String>,
+
+    /// Filter by tag (can be specified multiple times)
+    #[arg(short, long = "tag", action = ArgAction::Append)]
+    pub tags: Vec<String>,
+
+    /// Include archived notes
+    #[arg(short = 'a', long)]
+    pub include_archived: bool,
+
+    /// Resolve internal note links (note ID references become HTML links)
+    #[arg(short = 'r', long)]
+    pub resolve_links: bool,
+
+    /// CLI output format (for status messages, not export content)
+    #[arg(long = "cli-format", value_enum, default_value_t = OutputFormat::Human)]
+    pub cli_format: OutputFormat,
 }

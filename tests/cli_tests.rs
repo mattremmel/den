@@ -2370,3 +2370,580 @@ mod archive_filtering_tests {
         assert_eq!(items[0]["title"], "Active Findable Note");
     }
 }
+
+// ===========================================
+// export command tests
+// ===========================================
+mod export_tests {
+    use super::*;
+
+    #[test]
+    fn test_export_single_note_to_stdout() {
+        let env = TestEnv::new();
+
+        let note = TestNote::new("Export Test").body("# Hello World\n\nContent here.");
+        env.add_note(&note);
+        env.build_index().expect("Should build index");
+
+        env.cmd()
+            .export("Export Test")
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("<!DOCTYPE html>"))
+            .stdout(predicate::str::contains("Export Test"))
+            .stdout(predicate::str::contains("Hello World"));
+    }
+
+    #[test]
+    fn test_export_by_id_prefix() {
+        let env = TestEnv::new();
+
+        let note = TestNote::new("ID Export Note").id("01HQ3K5M7NXJK4QZPW8V2R6T9Y");
+        env.add_note(&note);
+        env.build_index().expect("Should build index");
+
+        env.cmd()
+            .export("01HQ3K5M7N")
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("ID Export Note"));
+    }
+
+    #[test]
+    fn test_export_to_file() {
+        let env = TestEnv::new();
+
+        let note = TestNote::new("File Export").body("Export content");
+        env.add_note(&note);
+        env.build_index().expect("Should build index");
+
+        let output_dir = env.notes_dir().join("export");
+
+        env.cmd()
+            .export("File Export")
+            .with_output(&output_dir)
+            .assert()
+            .success();
+
+        // Check that HTML file was created
+        let html_file = output_dir.join("file-export.html");
+        assert!(html_file.exists(), "HTML file should be created");
+
+        let content = std::fs::read_to_string(html_file).unwrap();
+        assert!(content.contains("File Export"));
+        assert!(content.contains("Export content"));
+    }
+
+    #[test]
+    fn test_export_with_custom_template() {
+        let env = TestEnv::new();
+
+        let note = TestNote::new("Template Test").body("Body text");
+        env.add_note(&note);
+        env.build_index().expect("Should build index");
+
+        let template =
+            env.write_file("custom.html", "<!DOCTYPE html><html><body>CUSTOM: {{ title }} - {{ content }}</body></html>");
+
+        env.cmd()
+            .export("Template Test")
+            .with_template(&template)
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("CUSTOM: Template Test"))
+            .stdout(predicate::str::contains("Body text"));
+    }
+
+    #[test]
+    fn test_export_with_dark_theme() {
+        let env = TestEnv::new();
+
+        let note = TestNote::new("Dark Theme Test");
+        env.add_note(&note);
+        env.build_index().expect("Should build index");
+
+        env.cmd()
+            .export("Dark Theme Test")
+            .with_theme("dark")
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("#1a1a1a")); // Dark theme background
+    }
+
+    #[test]
+    fn test_export_with_custom_css() {
+        let env = TestEnv::new();
+
+        let note = TestNote::new("Custom CSS Test");
+        env.add_note(&note);
+        env.build_index().expect("Should build index");
+
+        let css = env.write_file("custom.css", "body { color: purple; }");
+
+        env.cmd()
+            .export("Custom CSS Test")
+            .with_theme(css.to_str().unwrap())
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("color: purple"));
+    }
+
+    #[test]
+    fn test_export_includes_topics() {
+        let env = TestEnv::new();
+
+        let note = TestNote::new("Topic Note").topic("software/rust");
+        env.add_note(&note);
+        env.build_index().expect("Should build index");
+
+        env.cmd()
+            .export("Topic Note")
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("software/rust"));
+    }
+
+    #[test]
+    fn test_export_includes_tags() {
+        let env = TestEnv::new();
+
+        let note = TestNote::new("Tagged Note").tag("important").tag("draft");
+        env.add_note(&note);
+        env.build_index().expect("Should build index");
+
+        env.cmd()
+            .export("Tagged Note")
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("important"))
+            .stdout(predicate::str::contains("draft"));
+    }
+
+    #[test]
+    fn test_export_note_not_found() {
+        let env = TestEnv::new();
+        env.build_index().expect("Should build index");
+
+        env.cmd()
+            .export("nonexistent")
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains("not found"));
+    }
+
+    #[test]
+    fn test_export_markdown_converted() {
+        let env = TestEnv::new();
+
+        let note = TestNote::new("Markdown Test")
+            .body("# Heading\n\n**Bold** and *italic*\n\n- List item");
+        env.add_note(&note);
+        env.build_index().expect("Should build index");
+
+        env.cmd()
+            .export("Markdown Test")
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("<h1>Heading</h1>"))
+            .stdout(predicate::str::contains("<strong>Bold</strong>"))
+            .stdout(predicate::str::contains("<em>italic</em>"))
+            .stdout(predicate::str::contains("<li>List item</li>"));
+    }
+
+    #[test]
+    fn test_export_code_blocks() {
+        let env = TestEnv::new();
+
+        let note = TestNote::new("Code Test").body("```rust\nfn main() {}\n```");
+        env.add_note(&note);
+        env.build_index().expect("Should build index");
+
+        env.cmd()
+            .export("Code Test")
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("<pre>"))
+            .stdout(predicate::str::contains("fn main()"));
+    }
+
+    #[test]
+    fn test_export_json_output() {
+        let env = TestEnv::new();
+
+        let note = TestNote::new("JSON Output Test").id("01HQ3K5M7NXJK4QZPW8V2R6T9Y");
+        env.add_note(&note);
+        env.build_index().expect("Should build index");
+
+        let output_dir = env.notes_dir().join("export");
+
+        let output: serde_json::Value = env
+            .cmd()
+            .export("JSON Output Test")
+            .with_output(&output_dir)
+            .cli_format_json()
+            .output_json();
+
+        assert!(output.is_object(), "Output should be a JSON object");
+        let data = output.get("data").expect("Should have 'data' field");
+        assert_eq!(data["notes_exported"], 1);
+        assert!(data["path"].as_str().is_some());
+        assert!(data["title"].as_str().unwrap().contains("JSON Output Test"));
+    }
+
+    #[test]
+    fn test_export_pdf_not_implemented() {
+        let env = TestEnv::new();
+
+        let note = TestNote::new("PDF Test");
+        env.add_note(&note);
+        env.build_index().expect("Should build index");
+
+        env.cmd()
+            .export("PDF Test")
+            .export_format_pdf()
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains("not yet implemented"));
+    }
+
+    #[test]
+    fn test_export_site_requires_all() {
+        let env = TestEnv::new();
+
+        let note = TestNote::new("Site Test");
+        env.add_note(&note);
+        env.build_index().expect("Should build index");
+
+        env.cmd()
+            .export("Site Test")
+            .export_format_site()
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains("--all"));
+    }
+
+    #[test]
+    fn test_export_ambiguous_note() {
+        let env = TestEnv::new();
+
+        // Two notes with same title
+        let note1 = TestNote::new("Duplicate Title").id("01HQ3K5M7NXJK4QZPW8V2R6T9Y");
+        let note2 = TestNote::new("Duplicate Title").id("01HQ4A2R9PXJK4QZPW8V2R6T9Y");
+        env.add_note(&note1);
+        env.add_note(&note2);
+        env.build_index().expect("Should build index");
+
+        env.cmd()
+            .export("Duplicate Title")
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains("Ambiguous"));
+    }
+
+    // ===========================================
+    // Bulk Export Tests
+    // ===========================================
+
+    #[test]
+    fn test_export_all_html() {
+        let env = TestEnv::new();
+
+        env.add_note(&TestNote::new("Note One").body("Content one"));
+        env.add_note(&TestNote::new("Note Two").body("Content two"));
+        env.add_note(&TestNote::new("Note Three").body("Content three"));
+        env.build_index().expect("Should build index");
+
+        let output_dir = env.notes_dir().join("export");
+
+        env.cmd()
+            .export_all()
+            .with_output(&output_dir)
+            .assert()
+            .success();
+
+        // Check all files exist
+        assert!(output_dir.join("note-one.html").exists());
+        assert!(output_dir.join("note-two.html").exists());
+        assert!(output_dir.join("note-three.html").exists());
+    }
+
+    #[test]
+    fn test_export_all_requires_output() {
+        let env = TestEnv::new();
+
+        env.add_note(&TestNote::new("Test Note"));
+        env.build_index().expect("Should build index");
+
+        env.cmd()
+            .export_all()
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains("--output"));
+    }
+
+    #[test]
+    fn test_export_all_by_topic() {
+        let env = TestEnv::new();
+
+        env.add_note(&TestNote::new("Rust Note").topic("software/rust"));
+        env.add_note(&TestNote::new("Python Note").topic("software/python"));
+        env.add_note(&TestNote::new("Other Note").topic("other"));
+        env.build_index().expect("Should build index");
+
+        let output_dir = env.notes_dir().join("export");
+
+        env.cmd()
+            .export_all()
+            .with_topic("software/")
+            .with_output(&output_dir)
+            .assert()
+            .success();
+
+        // Only software notes should be exported
+        assert!(output_dir.join("rust-note.html").exists());
+        assert!(output_dir.join("python-note.html").exists());
+        assert!(!output_dir.join("other-note.html").exists());
+    }
+
+    #[test]
+    fn test_export_all_by_tag() {
+        let env = TestEnv::new();
+
+        env.add_note(&TestNote::new("Tagged Note").tag("important"));
+        env.add_note(&TestNote::new("Untagged Note"));
+        env.build_index().expect("Should build index");
+
+        let output_dir = env.notes_dir().join("export");
+
+        env.cmd()
+            .export_all()
+            .with_tag("important")
+            .with_output(&output_dir)
+            .assert()
+            .success();
+
+        assert!(output_dir.join("tagged-note.html").exists());
+        assert!(!output_dir.join("untagged-note.html").exists());
+    }
+
+    #[test]
+    fn test_export_all_excludes_archived() {
+        let env = TestEnv::new();
+
+        env.add_note(&TestNote::new("Active Note"));
+        env.add_note(&TestNote::new("Archived Note").tag("archived"));
+        env.build_index().expect("Should build index");
+
+        let output_dir = env.notes_dir().join("export");
+
+        env.cmd()
+            .export_all()
+            .with_output(&output_dir)
+            .assert()
+            .success();
+
+        assert!(output_dir.join("active-note.html").exists());
+        assert!(!output_dir.join("archived-note.html").exists());
+    }
+
+    #[test]
+    fn test_export_all_include_archived() {
+        let env = TestEnv::new();
+
+        env.add_note(&TestNote::new("Active Note"));
+        env.add_note(&TestNote::new("Archived Note").tag("archived"));
+        env.build_index().expect("Should build index");
+
+        let output_dir = env.notes_dir().join("export");
+
+        env.cmd()
+            .export_all()
+            .with_output(&output_dir)
+            .with_include_archived()
+            .assert()
+            .success();
+
+        assert!(output_dir.join("active-note.html").exists());
+        assert!(output_dir.join("archived-note.html").exists());
+    }
+
+    #[test]
+    fn test_export_site_generates_index() {
+        let env = TestEnv::new();
+
+        env.add_note(&TestNote::new("Site Note One"));
+        env.add_note(&TestNote::new("Site Note Two"));
+        env.build_index().expect("Should build index");
+
+        let output_dir = env.notes_dir().join("site");
+
+        env.cmd()
+            .export_all()
+            .export_format_site()
+            .with_output(&output_dir)
+            .assert()
+            .success();
+
+        // Check index and notes exist
+        let index_path = output_dir.join("index.html");
+        assert!(index_path.exists());
+
+        let index_content = std::fs::read_to_string(index_path).unwrap();
+        assert!(index_content.contains("Site Note One"));
+        assert!(index_content.contains("Site Note Two"));
+
+        // Check CSS file
+        assert!(output_dir.join("style.css").exists());
+    }
+
+    #[test]
+    fn test_export_site_with_topics() {
+        let env = TestEnv::new();
+
+        env.add_note(&TestNote::new("Rust Note").topic("software/rust"));
+        env.add_note(&TestNote::new("Python Note").topic("software/python"));
+        env.build_index().expect("Should build index");
+
+        let output_dir = env.notes_dir().join("site");
+
+        env.cmd()
+            .export_all()
+            .export_format_site()
+            .with_output(&output_dir)
+            .assert()
+            .success();
+
+        // Check topic directories exist
+        assert!(output_dir.join("software").join("rust").exists());
+        assert!(output_dir.join("software").join("python").exists());
+
+        // Check topic index pages
+        assert!(
+            output_dir
+                .join("software")
+                .join("rust")
+                .join("index.html")
+                .exists()
+        );
+    }
+
+    #[test]
+    fn test_export_json_bulk_output() {
+        let env = TestEnv::new();
+
+        env.add_note(&TestNote::new("Bulk Note One"));
+        env.add_note(&TestNote::new("Bulk Note Two"));
+        env.build_index().expect("Should build index");
+
+        let output_dir = env.notes_dir().join("export");
+
+        let output: serde_json::Value = env
+            .cmd()
+            .export_all()
+            .with_output(&output_dir)
+            .cli_format_json()
+            .output_json();
+
+        let data = output.get("data").expect("Should have 'data' field");
+        assert_eq!(data["notes_exported"], 2);
+        assert!(data["path"].as_str().is_some());
+    }
+
+    // ===========================================
+    // Link Resolution Tests
+    // ===========================================
+
+    #[test]
+    fn test_export_resolves_internal_links() {
+        let env = TestEnv::new();
+
+        let target = TestNote::new("Target Note").id("01HQ4A2R9PXJK4QZPW8V2R6T9Y");
+        let source = TestNote::new("Source Note").body("See [Target](01HQ4A2R9P) for more.");
+        env.add_note(&target);
+        env.add_note(&source);
+        env.build_index().expect("Should build index");
+
+        env.cmd()
+            .export("Source Note")
+            .args(["--resolve-links"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("target-note.html"));
+    }
+
+    #[test]
+    fn test_export_without_resolve_keeps_links() {
+        let env = TestEnv::new();
+
+        let target = TestNote::new("Target Note").id("01HQ4A2R9PXJK4QZPW8V2R6T9Y");
+        let source = TestNote::new("Source Note").body("See [Target](01HQ4A2R9P) for more.");
+        env.add_note(&target);
+        env.add_note(&source);
+        env.build_index().expect("Should build index");
+
+        // Without --resolve-links, the ID should remain unchanged
+        env.cmd()
+            .export("Source Note")
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("01HQ4A2R9P"));
+    }
+
+    #[test]
+    fn test_export_preserves_external_links() {
+        let env = TestEnv::new();
+
+        let note =
+            TestNote::new("Link Note").body("Visit [example](https://example.com) for more.");
+        env.add_note(&note);
+        env.build_index().expect("Should build index");
+
+        env.cmd()
+            .export("Link Note")
+            .args(["--resolve-links"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("https://example.com"));
+    }
+
+    #[test]
+    fn test_export_marks_broken_links() {
+        let env = TestEnv::new();
+
+        let note = TestNote::new("Broken Link Note")
+            .body("See [Missing](01HZZZZZZZZZ) for details.");
+        env.add_note(&note);
+        env.build_index().expect("Should build index");
+
+        env.cmd()
+            .export("Broken Link Note")
+            .args(["--resolve-links"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("Broken link"));
+    }
+
+    #[test]
+    fn test_export_bulk_resolves_links() {
+        let env = TestEnv::new();
+
+        let target = TestNote::new("Bulk Target").id("01HQ4A2R9PXJK4QZPW8V2R6T9Y");
+        let source = TestNote::new("Bulk Source").body("Link to [target](01HQ4A2R9P).");
+        env.add_note(&target);
+        env.add_note(&source);
+        env.build_index().expect("Should build index");
+
+        let output_dir = env.notes_dir().join("export");
+
+        env.cmd()
+            .export_all()
+            .args(["--resolve-links"])
+            .with_output(&output_dir)
+            .assert()
+            .success();
+
+        let source_content =
+            std::fs::read_to_string(output_dir.join("bulk-source.html")).unwrap();
+        assert!(source_content.contains("bulk-target.html"));
+    }
+}

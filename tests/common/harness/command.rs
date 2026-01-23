@@ -234,6 +234,55 @@ impl DenCommand {
     pub fn with_include_archived(self) -> Self {
         self.args(["--include-archived"])
     }
+
+    // ===========================================
+    // Export Command Helpers
+    // ===========================================
+
+    /// Configures for the `export` command with a note.
+    pub fn export(self, note: &str) -> Self {
+        self.args(["export", note])
+    }
+
+    /// Configures for `export --all`.
+    pub fn export_all(self) -> Self {
+        self.args(["export", "--all"])
+    }
+
+    /// Adds `--format html` for export.
+    pub fn export_format_html(self) -> Self {
+        self.args(["--format", "html"])
+    }
+
+    /// Adds `--format pdf` for export.
+    pub fn export_format_pdf(self) -> Self {
+        self.args(["--format", "pdf"])
+    }
+
+    /// Adds `--format site` for export.
+    pub fn export_format_site(self) -> Self {
+        self.args(["--format", "site"])
+    }
+
+    /// Adds `--output <path>` for export.
+    pub fn with_output(self, path: &std::path::Path) -> Self {
+        self.args(["--output", path.to_str().unwrap()])
+    }
+
+    /// Adds `--template <path>` for export.
+    pub fn with_template(self, path: &std::path::Path) -> Self {
+        self.args(["--template", path.to_str().unwrap()])
+    }
+
+    /// Adds `--theme <name>` for export.
+    pub fn with_theme(self, theme: &str) -> Self {
+        self.args(["--theme", theme])
+    }
+
+    /// Adds `--cli-format json` for export command status output.
+    pub fn cli_format_json(self) -> Self {
+        self.args(["--cli-format", "json"])
+    }
 }
 
 impl Default for DenCommand {

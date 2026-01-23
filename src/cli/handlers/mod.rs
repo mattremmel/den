@@ -2,6 +2,7 @@
 
 mod archive;
 mod check;
+mod export;
 mod index;
 mod links;
 mod list;
@@ -27,6 +28,7 @@ use crate::index::{FileResult, ProgressReporter};
 // Re-export public items
 pub use archive::{ARCHIVED_TAG, handle_archive, handle_unarchive};
 pub use check::handle_check;
+pub use export::handle_export;
 pub use index::handle_index;
 pub use links::{handle_backlinks, handle_link, handle_rels, handle_unlink};
 pub use list::handle_list;

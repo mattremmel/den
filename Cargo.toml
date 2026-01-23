@@ -27,6 +27,9 @@ sha2 = "0.10"
 tempfile = "3"
 dirs = "5"
 toml = "0.8"
+pulldown-cmark = "0.9"
+minijinja = "2"
+regex = "1"
 
 [dev-dependencies]
 assert_cmd = "2"

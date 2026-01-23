@@ -2,6 +2,7 @@
 
 pub mod cli;
 pub mod domain;
+pub mod export;
 pub mod index;
 pub mod infra;
 
@@ -13,9 +14,9 @@ use cli::{
     config::Config,
     handlers::{
         handle_archive, handle_backlinks, handle_check, handle_completions, handle_edit,
-        handle_index, handle_link, handle_list, handle_mv, handle_new, handle_rels, handle_search,
-        handle_show, handle_tag, handle_tags, handle_topics, handle_unarchive, handle_unlink,
-        handle_untag,
+        handle_export, handle_index, handle_link, handle_list, handle_mv, handle_new, handle_rels,
+        handle_search, handle_show, handle_tag, handle_tags, handle_topics, handle_unarchive,
+        handle_unlink, handle_untag,
     },
 };
 
@@ -46,5 +47,6 @@ pub fn run() -> Result<()> {
         Command::Mv(args) => handle_mv(args, &notes_dir),
         Command::Archive(args) => handle_archive(args, &notes_dir),
         Command::Unarchive(args) => handle_unarchive(args, &notes_dir),
+        Command::Export(args) => handle_export(args, &notes_dir),
     }
 }

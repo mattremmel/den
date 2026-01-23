@@ -65,6 +65,15 @@ impl TestEnv {
     pub fn cmd(&self) -> DenCommand {
         DenCommand::new().dir(&self.notes_dir)
     }
+
+    /// Writes a file to the test environment and returns its path.
+    ///
+    /// Useful for creating custom templates, CSS files, etc.
+    pub fn write_file(&self, name: &str, content: &str) -> PathBuf {
+        let path = self.notes_dir.join(name);
+        std::fs::write(&path, content).expect("Failed to write file");
+        path
+    }
 }
 
 impl Default for TestEnv {
