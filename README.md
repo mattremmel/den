@@ -156,6 +156,9 @@ den ls --created 30d --tag draft # Combined filters
 # Output formats
 den ls --format json             # JSON output
 den ls --format paths            # Just file paths (useful for scripting)
+
+# Include archived notes
+den ls -a                        # Show all including archived
 ```
 
 ### Searching Notes
@@ -175,6 +178,9 @@ den search "error handling" --tag reference
 # Output formats
 den search "query" --format json
 den search "query" --format paths
+
+# Include archived notes
+den search "query" -a
 ```
 
 ### Viewing and Editing Notes
@@ -194,6 +200,40 @@ Notes can be referenced by:
 - **ID prefix**: First 4+ characters of the ULID (e.g., `01HQ3K5M7N`)
 - **Title**: Exact match, case-insensitive
 - **Alias**: Any alias defined in the note's frontmatter
+
+### Moving and Renaming Notes
+
+```bash
+# Rename a note (updates title and filename)
+den mv "Old Title" --title "New Title"
+
+# Change topics
+den mv "My Note" --topic new/topic
+den mv "My Note" --topic topic1 --topic topic2   # Multiple topics
+
+# Clear all topics
+den mv "My Note" --clear-topics
+
+# Rename and reorganize in one command
+den mv "My Note" --title "Better Name" --topic projects/active
+```
+
+### Archiving Notes
+
+Archive notes to hide them from default listings while preserving them:
+
+```bash
+# Archive a note
+den archive "Old Project Notes"
+
+# Unarchive a note
+den unarchive "Old Project Notes"
+
+# Archived notes are hidden by default
+den ls                       # Won't show archived notes
+den ls -a                    # Include archived notes
+den search "query" -a        # Include archived in search
+```
 
 ### Topics and Tags
 
@@ -255,6 +295,37 @@ den check
 # Attempt to fix issues automatically
 den check --fix
 ```
+
+### Exporting Notes
+
+Export notes to HTML or generate a static site:
+
+```bash
+# Export a single note to HTML (outputs to stdout)
+den export "API Design"
+
+# Export to a file
+den export "API Design" -o api-design.html
+
+# Export with dark theme
+den export "API Design" --theme dark -o api-design.html
+
+# Export all notes as a static site
+den export --all --format site -o ./my-site
+
+# Export with resolved internal links (note references become clickable)
+den export "API Design" --resolve-links -o api-design.html
+
+# Filter what to export
+den export --all -F site -o ./docs --topic software/   # Only software notes
+den export --all -F site -o ./docs --tag reference     # Only reference notes
+den export --all -F site -o ./docs -a                  # Include archived notes
+```
+
+Export formats:
+- **html**: Single HTML document with syntax highlighting
+- **site**: Static site with navigation sidebar and inter-note links
+- **pdf**: PDF document (requires `wkhtmltopdf` or `weasyprint`)
 
 ## Note Format
 
