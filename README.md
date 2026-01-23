@@ -17,6 +17,21 @@ cargo build --release
 # Binary will be at target/release/den
 ```
 
+### Shell Completions
+
+Generate and install shell completions for tab-completion of commands and options:
+
+```bash
+# Bash (add to ~/.bashrc)
+den completions bash > ~/.local/share/bash-completion/completions/den
+
+# Zsh (add to fpath directory)
+den completions zsh > ~/.zfunc/_den
+
+# Fish
+den completions fish > ~/.config/fish/completions/den.fish
+```
+
 ## Configuration
 
 den uses a TOML configuration file located at:
@@ -54,7 +69,30 @@ The editor command is determined in this order:
 
 The editor setting supports arguments, e.g., `editor = "code --wait"` for VS Code.
 
-## Usage
+## Quick Start
+
+```bash
+# Set up your notes directory
+mkdir ~/notes
+echo 'dir = "/Users/me/notes"' > ~/.config/den/config.toml
+
+# Create your first note
+den new "Getting Started with den" --topic meta --tag reference --edit
+
+# Build the index
+den index
+
+# List all notes
+den ls
+
+# Search for content
+den search "getting started"
+
+# Edit an existing note
+den edit "Getting Started"
+```
+
+## Commands
 
 ### Index Management
 
@@ -160,13 +198,62 @@ Notes can be referenced by:
 ### Topics and Tags
 
 ```bash
-# List all topics (not yet implemented)
+# List all topics
 den topics
 den topics --counts      # With note counts
+den topics --format json
 
-# List all tags (not yet implemented)
+# List all tags
 den tags
 den tags --counts        # With note counts
+den tags --format json
+
+# Add a tag to a note
+den tag "API Design" important
+den tag 01HQ3K5M7N review
+
+# Remove a tag from a note
+den untag "API Design" draft
+den untag 01HQ3K5M7N obsolete
+```
+
+### Link Management
+
+Create typed relationships between notes:
+
+```bash
+# Create a link with relationship type
+den link "API Design" "REST Principles" --rel parent
+
+# Create a link with multiple relationship types
+den link "My Project" "Reference Doc" --rel source --rel inspiration
+
+# Create a link with context note
+den link "Meeting Notes" "Action Items" --rel followed-by --note "Discussed in Q4 planning"
+
+# Remove a link
+den unlink "API Design" "REST Principles"
+
+# Show notes that link to a given note (backlinks)
+den backlinks "REST Principles"
+den backlinks "REST Principles" --rel parent    # Filter by relationship type
+den backlinks "REST Principles" --format json
+
+# List all relationship types in use
+den rels
+den rels --counts        # With usage counts
+```
+
+### Validation
+
+Check your notes collection for issues:
+
+```bash
+# Check for problems (broken links, orphans, etc.)
+den check
+
+# Attempt to fix issues automatically
+den check --fix
 ```
 
 ## Note Format
@@ -243,29 +330,67 @@ den --dir /path/to/notes ls
 den -v index          # Verbose
 den -vv index         # More verbose
 den -vvv index        # Debug level
+
+# Version
+den --version
 ```
 
-## Example Workflow
+## Example Workflows
+
+### Building a Knowledge Base
 
 ```bash
-# Set up your notes directory
-mkdir ~/notes
-echo 'dir = "/Users/me/notes"' > ~/.config/den/config.toml
+# Create topic structure through notes
+den new "Rust Overview" --topic programming/rust --tag evergreen
+den new "Ownership in Rust" --topic programming/rust/concepts --tag reference
+den new "Async Rust" --topic programming/rust/async --tag draft
 
-# Create your first note
-den new "Getting Started with den" --topic meta --tag reference --edit
+# Link related notes
+den link "Ownership in Rust" "Rust Overview" --rel parent
+den link "Async Rust" "Ownership in Rust" --rel prerequisite
 
-# Build the index
-den index
+# Browse by topic
+den ls programming/rust/     # All Rust notes including subtopics
+den topics --counts          # See topic hierarchy
 
-# List all notes
-den ls
+# Find what links to a concept
+den backlinks "Ownership in Rust"
+```
 
-# Search for content
-den search "getting started"
+### Project Notes
 
-# Edit an existing note
-den edit "Getting Started"
+```bash
+# Create project notes
+den new "Project Alpha" --topic projects/alpha --tag active
+den new "Alpha Meeting 2024-01-15" --topic projects/alpha/meetings
+den new "Alpha Architecture" --topic projects/alpha --tag decision
+
+# Link meeting to project
+den link "Alpha Meeting 2024-01-15" "Project Alpha" --rel part-of
+
+# Find all project notes
+den ls projects/alpha/
+
+# Search within project
+den search "deadline" --topic projects/alpha
+```
+
+### Research and References
+
+```bash
+# Create reference notes
+den new "Clean Architecture" --topic reference/books --tag evergreen
+den new "Domain-Driven Design" --topic reference/books --tag evergreen
+
+# Add relationship between concepts
+den link "Clean Architecture" "Domain-Driven Design" --rel see-also --note "Complementary approaches"
+
+# Tag notes as you review them
+den tag "Clean Architecture" reviewed
+den untag "Clean Architecture" to-read
+
+# Find all references
+den ls reference/ --tag evergreen
 ```
 
 ## License
