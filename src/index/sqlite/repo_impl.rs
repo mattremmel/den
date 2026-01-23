@@ -18,13 +18,19 @@ impl IndexRepository for SqliteIndex {
     }
 
     fn get_note(&self, id: &NoteId) -> IndexResult<Option<IndexedNote>> {
-        // Query notes table
-        let mut stmt = self.conn.prepare(
-            "SELECT id, title, description, created, modified, path, content_hash
-             FROM notes WHERE id = ?",
+        // Single query with scalar subqueries for related data
+        // Using subqueries avoids cartesian product issues with multiple JOINs
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT
+                n.id, n.title, n.description, n.created, n.modified, n.path, n.content_hash,
+                (SELECT GROUP_CONCAT(alias, '\x1F') FROM aliases WHERE note_id = n.id) as aliases,
+                (SELECT GROUP_CONCAT(t.path, '\x1F') FROM note_topics nt JOIN topics t ON nt.topic_id = t.id WHERE nt.note_id = n.id) as topics,
+                (SELECT GROUP_CONCAT(t.name, '\x1F') FROM note_tags ntg JOIN tags t ON ntg.tag_id = t.id WHERE ntg.note_id = n.id) as tags
+             FROM notes n
+             WHERE n.id = ?",
         )?;
 
-        let note_row = stmt.query_row([id.to_string()], |row| {
+        let result = stmt.query_row([id.to_string()], |row| {
             Ok((
                 row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,
@@ -33,17 +39,33 @@ impl IndexRepository for SqliteIndex {
                 row.get::<_, String>(4)?,
                 row.get::<_, String>(5)?,
                 row.get::<_, String>(6)?,
+                row.get::<_, Option<String>>(7)?,
+                row.get::<_, Option<String>>(8)?,
+                row.get::<_, Option<String>>(9)?,
             ))
         });
 
-        let (id_str, title, description, created_str, modified_str, path_str, hash_str) =
-            match note_row {
-                Ok(row) => row,
-                Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(None),
-                Err(e) => return Err(IndexError::Database(e)),
-            };
+        let (
+            id_str,
+            title,
+            description,
+            created_str,
+            modified_str,
+            path_str,
+            hash_str,
+            aliases_str,
+            topics_str,
+            tags_str,
+        ) = match result {
+            Ok(row) => row,
+            Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(None),
+            Err(e) => return Err(IndexError::Database(e)),
+        };
 
-        // Parse values
+        // Use unit separator as delimiter (unlikely to appear in data)
+        const SEP: &str = "\x1F";
+
+        // Parse core values
         let note_id: NoteId = id_str
             .parse()
             .map_err(|e| IndexError::InvalidQuery(format!("invalid note ID in database: {}", e)))?;
@@ -61,31 +83,26 @@ impl IndexRepository for SqliteIndex {
 
         let path = PathBuf::from(path_str);
 
-        // Query aliases from aliases table
-        let aliases: Vec<String> = self
-            .conn
-            .prepare("SELECT alias FROM aliases WHERE note_id = ?")?
-            .query_map([id.to_string()], |row| row.get::<_, String>(0))?
-            .filter_map(|r| r.ok())
-            .collect();
+        // Parse GROUP_CONCAT results
+        let aliases: Vec<String> = aliases_str
+            .map(|s| s.split(SEP).map(String::from).collect())
+            .unwrap_or_default();
 
-        // Query topics via JOIN
-        let topics: Vec<Topic> = self
-            .conn
-            .prepare("SELECT t.path FROM topics t JOIN note_topics nt ON t.id = nt.topic_id WHERE nt.note_id = ?")?
-            .query_map([id.to_string()], |row| row.get::<_, String>(0))?
-            .filter_map(|r| r.ok())
-            .filter_map(|path| Topic::new(&path).ok())
-            .collect();
+        let topics: Vec<Topic> = topics_str
+            .map(|s| {
+                s.split(SEP)
+                    .filter_map(|p| Topic::new(p).ok())
+                    .collect()
+            })
+            .unwrap_or_default();
 
-        // Query tags via JOIN
-        let tags: Vec<Tag> = self
-            .conn
-            .prepare("SELECT t.name FROM tags t JOIN note_tags nt ON t.id = nt.tag_id WHERE nt.note_id = ?")?
-            .query_map([id.to_string()], |row| row.get::<_, String>(0))?
-            .filter_map(|r| r.ok())
-            .filter_map(|name| Tag::new(&name).ok())
-            .collect();
+        let tags: Vec<Tag> = tags_str
+            .map(|s| {
+                s.split(SEP)
+                    .filter_map(|t| Tag::new(t).ok())
+                    .collect()
+            })
+            .unwrap_or_default();
 
         // Build IndexedNote
         let mut builder =
@@ -604,5 +621,136 @@ impl IndexRepository for SqliteIndex {
             }
         }
         Ok(notes)
+    }
+
+    fn upsert_notes_batch(
+        &mut self,
+        notes: &[(&Note, &ContentHash, &Path)],
+    ) -> IndexResult<()> {
+        if notes.is_empty() {
+            return Ok(());
+        }
+
+        let tx = self.transaction()?;
+
+        {
+            // Prepare all statements once for reuse
+            let mut insert_note = tx.conn().prepare_cached(
+                "INSERT INTO notes (id, path, title, description, created, modified, content_hash, aliases_text)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                 ON CONFLICT(id) DO UPDATE SET
+                     path = excluded.path,
+                     title = excluded.title,
+                     description = excluded.description,
+                     modified = excluded.modified,
+                     content_hash = excluded.content_hash,
+                     aliases_text = excluded.aliases_text",
+            )?;
+            let mut delete_topics = tx
+                .conn()
+                .prepare_cached("DELETE FROM note_topics WHERE note_id = ?")?;
+            let mut delete_tags = tx
+                .conn()
+                .prepare_cached("DELETE FROM note_tags WHERE note_id = ?")?;
+            let mut delete_aliases = tx
+                .conn()
+                .prepare_cached("DELETE FROM aliases WHERE note_id = ?")?;
+            let mut delete_links = tx
+                .conn()
+                .prepare_cached("DELETE FROM links WHERE source_id = ?")?;
+            let mut insert_topic = tx
+                .conn()
+                .prepare_cached("INSERT OR IGNORE INTO topics (path) VALUES (?)")?;
+            let mut insert_topic_junction = tx.conn().prepare_cached(
+                "INSERT INTO note_topics (note_id, topic_id)
+                 SELECT ?, id FROM topics WHERE path = ?",
+            )?;
+            let mut insert_tag = tx
+                .conn()
+                .prepare_cached("INSERT OR IGNORE INTO tags (name) VALUES (?)")?;
+            let mut insert_tag_junction = tx.conn().prepare_cached(
+                "INSERT INTO note_tags (note_id, tag_id)
+                 SELECT ?, id FROM tags WHERE name = ?",
+            )?;
+            let mut insert_alias = tx
+                .conn()
+                .prepare_cached("INSERT INTO aliases (note_id, alias) VALUES (?, ?)")?;
+            let mut insert_link = tx.conn().prepare_cached(
+                "INSERT INTO links (source_id, target_id, note) VALUES (?, ?, ?)",
+            )?;
+            let mut get_link_id = tx.conn().prepare_cached(
+                "SELECT id FROM links WHERE source_id = ? AND target_id = ?",
+            )?;
+            let mut insert_link_rel = tx
+                .conn()
+                .prepare_cached("INSERT INTO link_rels (link_id, rel) VALUES (?, ?)")?;
+
+            for (note, content_hash, path) in notes {
+                let id_str = note.id().to_string();
+                let path_str = path.to_string_lossy();
+                let created_str = note.created().to_rfc3339();
+                let modified_str = note.modified().to_rfc3339();
+                let hash_str = content_hash.as_str();
+                let aliases_text = note.aliases().join(" ");
+                let aliases_text_opt = if aliases_text.is_empty() {
+                    None
+                } else {
+                    Some(aliases_text.as_str())
+                };
+
+                // 1. Upsert note
+                insert_note.execute(rusqlite::params![
+                    id_str,
+                    path_str,
+                    note.title(),
+                    note.description(),
+                    created_str,
+                    modified_str,
+                    hash_str,
+                    aliases_text_opt,
+                ])?;
+
+                // 2. Delete existing junctions
+                delete_topics.execute([&id_str])?;
+                delete_tags.execute([&id_str])?;
+                delete_aliases.execute([&id_str])?;
+                delete_links.execute([&id_str])?;
+
+                // 3. Insert topics
+                for topic in note.topics() {
+                    let topic_path = topic.to_string();
+                    insert_topic.execute([&topic_path])?;
+                    insert_topic_junction.execute([&id_str, &topic_path])?;
+                }
+
+                // 4. Insert tags
+                for tag in note.tags() {
+                    insert_tag.execute([tag.as_str()])?;
+                    insert_tag_junction.execute([&id_str, tag.as_str()])?;
+                }
+
+                // 5. Insert aliases
+                for alias in note.aliases() {
+                    insert_alias.execute([&id_str, alias])?;
+                }
+
+                // 6. Insert links
+                for link in note.links() {
+                    let target_str = link.target().to_string();
+                    let context = link.context();
+
+                    insert_link.execute(rusqlite::params![id_str, target_str, context])?;
+
+                    let link_id: i64 =
+                        get_link_id.query_row([&id_str, &target_str], |row| row.get(0))?;
+
+                    for rel in link.rel() {
+                        insert_link_rel.execute(rusqlite::params![link_id, rel.as_str()])?;
+                    }
+                }
+            }
+        }
+
+        tx.commit()
     }
 }

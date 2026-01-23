@@ -73,7 +73,19 @@ impl FsError {
 /// Returns `FsError::Parse` if the file content is invalid.
 pub fn read_note(path: &Path) -> Result<ParsedNote, FsError> {
     let bytes = std::fs::read(path).map_err(|e| FsError::from_io(path, e))?;
+    parse_note_from_bytes(bytes, path)
+}
 
+/// Parses a note from already-read bytes.
+///
+/// This is useful when you've already read the file bytes (e.g., for hash comparison)
+/// and want to parse without re-reading the file.
+///
+/// # Errors
+///
+/// Returns `FsError::InvalidEncoding` if the bytes are not valid UTF-8 or use unsupported encoding.
+/// Returns `FsError::Parse` if the content is invalid.
+pub fn parse_note_from_bytes(bytes: Vec<u8>, path: &Path) -> Result<ParsedNote, FsError> {
     // Compute hash from raw bytes BEFORE any BOM stripping or encoding conversion
     let content_hash = ContentHash::compute(&bytes);
 

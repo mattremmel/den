@@ -39,6 +39,14 @@ impl NoteId {
         Self(Ulid::from_datetime(system_time))
     }
 
+    /// Creates a NoteId from a millisecond timestamp with deterministic random bits.
+    /// Useful for benchmarks where reproducibility is needed.
+    pub fn from_timestamp_ms(timestamp_ms: u64) -> Self {
+        // Use timestamp as seed for deterministic random bits
+        let random_bits = (timestamp_ms as u128) | ((timestamp_ms as u128) << 64);
+        Self(Ulid::from_parts(timestamp_ms, random_bits))
+    }
+
     /// Returns the 10-character prefix of the ULID.
     ///
     /// This prefix is used in filenames (e.g., `01HQ3K5M7N-api-design.md`).

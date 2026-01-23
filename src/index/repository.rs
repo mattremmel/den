@@ -436,6 +436,15 @@ pub trait IndexRepository {
     /// Returns notes that contain links pointing to `target_id`.
     /// If `rel` is provided, only returns notes with links having that relationship type.
     fn backlinks(&self, target_id: &NoteId, rel: Option<&Rel>) -> IndexResult<Vec<IndexedNote>>;
+
+    /// Batch insert/update multiple notes in a single transaction.
+    ///
+    /// More efficient than calling `upsert_note` repeatedly, as it uses
+    /// a single transaction and prepared statements for all operations.
+    fn upsert_notes_batch(
+        &mut self,
+        notes: &[(&Note, &ContentHash, &Path)],
+    ) -> IndexResult<()>;
 }
 
 #[cfg(test)]

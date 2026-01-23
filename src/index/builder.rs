@@ -1,7 +1,7 @@
 //! Index builder for creating and updating the notes index from markdown files.
 
 use crate::index::{IndexRepository, IndexResult, SqliteIndex};
-use crate::infra::{ContentHash, FsError, read_note, scan_notes_directory};
+use crate::infra::{ContentHash, FsError, parse_note_from_bytes, read_note, scan_notes_directory};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -162,15 +162,15 @@ impl IndexBuilder {
             })?
             .collect();
 
-        let mut indexed = 0;
+        // Parse all files first, collecting results
+        let mut parsed_notes = Vec::with_capacity(files.len());
         let mut errors = Vec::new();
 
         for relative_path in files {
             let full_path = self.notes_dir.join(&relative_path);
             match read_note(&full_path) {
                 Ok(parsed) => {
-                    index.upsert_note(&parsed.note, &parsed.content_hash, &relative_path)?;
-                    indexed += 1;
+                    parsed_notes.push((parsed, relative_path.clone()));
                     progress.on_file(&relative_path, FileResult::Indexed);
                 }
                 Err(e) => {
@@ -184,6 +184,15 @@ impl IndexBuilder {
             }
         }
 
+        // Batch insert all parsed notes in a single transaction
+        let batch: Vec<_> = parsed_notes
+            .iter()
+            .map(|(parsed, path)| (&parsed.note, &parsed.content_hash, path.as_path()))
+            .collect();
+
+        index.upsert_notes_batch(&batch)?;
+
+        let indexed = parsed_notes.len();
         progress.on_complete(indexed, errors.len());
         Ok(BuildResult { indexed, errors })
     }
@@ -232,15 +241,15 @@ impl IndexBuilder {
         for relative_path in &current_files {
             let full_path = self.notes_dir.join(relative_path);
 
-            // Read the file to get the content hash
+            // Read the file bytes once
             match std::fs::read(&full_path) {
                 Ok(bytes) => {
                     let current_hash = ContentHash::compute(&bytes);
 
                     match indexed_paths.get(relative_path) {
                         None => {
-                            // New file - need to add
-                            match read_note(&full_path) {
+                            // New file - parse the bytes we already read (no re-read)
+                            match parse_note_from_bytes(bytes, &full_path) {
                                 Ok(parsed) => {
                                     index.upsert_note(
                                         &parsed.note,
@@ -261,8 +270,8 @@ impl IndexBuilder {
                             }
                         }
                         Some(indexed_hash) if indexed_hash != &current_hash => {
-                            // File changed - need to update
-                            match read_note(&full_path) {
+                            // File changed - parse the bytes we already read (no re-read)
+                            match parse_note_from_bytes(bytes, &full_path) {
                                 Ok(parsed) => {
                                     index.upsert_note(
                                         &parsed.note,
@@ -283,7 +292,7 @@ impl IndexBuilder {
                             }
                         }
                         Some(_) => {
-                            // File unchanged - skip
+                            // File unchanged - skip (bytes not needed)
                             progress.on_file(relative_path, FileResult::Skipped);
                         }
                     }
