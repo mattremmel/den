@@ -89,19 +89,11 @@ impl IndexRepository for SqliteIndex {
             .unwrap_or_default();
 
         let topics: Vec<Topic> = topics_str
-            .map(|s| {
-                s.split(SEP)
-                    .filter_map(|p| Topic::new(p).ok())
-                    .collect()
-            })
+            .map(|s| s.split(SEP).filter_map(|p| Topic::new(p).ok()).collect())
             .unwrap_or_default();
 
         let tags: Vec<Tag> = tags_str
-            .map(|s| {
-                s.split(SEP)
-                    .filter_map(|t| Tag::new(t).ok())
-                    .collect()
-            })
+            .map(|s| s.split(SEP).filter_map(|t| Tag::new(t).ok()).collect())
             .unwrap_or_default();
 
         // Build IndexedNote
@@ -623,10 +615,7 @@ impl IndexRepository for SqliteIndex {
         Ok(notes)
     }
 
-    fn upsert_notes_batch(
-        &mut self,
-        notes: &[(&Note, &ContentHash, &Path)],
-    ) -> IndexResult<()> {
+    fn upsert_notes_batch(&mut self, notes: &[(&Note, &ContentHash, &Path)]) -> IndexResult<()> {
         if notes.is_empty() {
             return Ok(());
         }
@@ -678,9 +667,9 @@ impl IndexRepository for SqliteIndex {
             let mut insert_link = tx.conn().prepare_cached(
                 "INSERT INTO links (source_id, target_id, note) VALUES (?, ?, ?)",
             )?;
-            let mut get_link_id = tx.conn().prepare_cached(
-                "SELECT id FROM links WHERE source_id = ? AND target_id = ?",
-            )?;
+            let mut get_link_id = tx
+                .conn()
+                .prepare_cached("SELECT id FROM links WHERE source_id = ? AND target_id = ?")?;
             let mut insert_link_rel = tx
                 .conn()
                 .prepare_cached("INSERT INTO link_rels (link_id, rel) VALUES (?, ?)")?;

@@ -441,10 +441,7 @@ pub trait IndexRepository {
     ///
     /// More efficient than calling `upsert_note` repeatedly, as it uses
     /// a single transaction and prepared statements for all operations.
-    fn upsert_notes_batch(
-        &mut self,
-        notes: &[(&Note, &ContentHash, &Path)],
-    ) -> IndexResult<()>;
+    fn upsert_notes_batch(&mut self, notes: &[(&Note, &ContentHash, &Path)]) -> IndexResult<()>;
 }
 
 #[cfg(test)]

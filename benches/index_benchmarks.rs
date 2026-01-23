@@ -2,7 +2,7 @@
 //!
 //! Run with: cargo bench --bench index_benchmarks
 
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use den::domain::{NoteId, Tag, Topic};
 use den::index::{IndexBuilder, IndexRepository, SqliteIndex};
 use std::fs;
@@ -80,9 +80,7 @@ fn generate_note_content(index: usize) -> String {
     let tag2 = TAGS[(index + 2) % TAGS.len()];
 
     // Generate body content
-    let body_words: Vec<&str> = (0..50)
-        .map(|j| WORDS[(index + j) % WORDS.len()])
-        .collect();
+    let body_words: Vec<&str> = (0..50).map(|j| WORDS[(index + j) % WORDS.len()]).collect();
     let body = body_words.join(" ");
 
     format!(
@@ -252,9 +250,7 @@ fn bench_search(c: &mut Criterion) {
         b.iter(|| index.search("\"software architecture\"").unwrap())
     });
 
-    group.bench_function("prefix", |b| {
-        b.iter(|| index.search("optim*").unwrap())
-    });
+    group.bench_function("prefix", |b| b.iter(|| index.search("optim*").unwrap()));
 
     group.finish();
 }
@@ -353,17 +349,13 @@ fn bench_get_note(c: &mut Criterion) {
 fn bench_all_topics(c: &mut Criterion) {
     let (index, _dir) = setup_index_with_notes(1000);
 
-    c.bench_function("all_topics", |b| {
-        b.iter(|| index.all_topics().unwrap())
-    });
+    c.bench_function("all_topics", |b| b.iter(|| index.all_topics().unwrap()));
 }
 
 fn bench_all_tags(c: &mut Criterion) {
     let (index, _dir) = setup_index_with_notes(1000);
 
-    c.bench_function("all_tags", |b| {
-        b.iter(|| index.all_tags().unwrap())
-    });
+    c.bench_function("all_tags", |b| b.iter(|| index.all_tags().unwrap()));
 }
 
 // =============================================================================
