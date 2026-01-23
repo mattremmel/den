@@ -142,6 +142,11 @@ impl DenCommand {
         self.args(["check"])
     }
 
+    /// Configures for the `mv` command.
+    pub fn mv(self, note: &str) -> Self {
+        self.args(["mv", note])
+    }
+
     // ===========================================
     // Format Options
     // ===========================================
@@ -203,6 +208,16 @@ impl DenCommand {
     /// Adds `--modified <date>` to the command.
     pub fn with_modified(self, date: &str) -> Self {
         self.args(["--modified", date])
+    }
+
+    /// Adds `--title <title>` to the command (for mv).
+    pub fn with_title(self, title: &str) -> Self {
+        self.args(["--title", title])
+    }
+
+    /// Adds `--clear-topics` to the command (for mv).
+    pub fn with_clear_topics(self) -> Self {
+        self.args(["--clear-topics"])
     }
 }
 

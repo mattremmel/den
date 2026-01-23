@@ -1511,3 +1511,454 @@ mod edge_case_tests {
             .stdout(predicate::str::contains("Deep Note"));
     }
 }
+
+// ===========================================
+// mv command tests
+// ===========================================
+mod mv_tests {
+    use super::*;
+
+    // ===========================================
+    // Title Rename Tests
+    // ===========================================
+
+    #[test]
+    fn test_mv_renames_title() {
+        let env = TestEnv::new();
+
+        let note = TestNote::new("Original Title").id("01HQ3K5M7NXJK4QZPW8V2R6T9Y");
+        env.add_note(&note);
+        env.build_index().expect("Should build index");
+
+        env.cmd()
+            .mv("01HQ3K5M7N")
+            .with_title("New Title")
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("Renamed"));
+
+        // Verify new title is visible
+        env.cmd()
+            .show("New Title")
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("New Title"));
+    }
+
+    #[test]
+    fn test_mv_renames_file_on_title_change() {
+        let env = TestEnv::new();
+
+        let note = TestNote::new("Old Name").id("01HQ3K5M7NXJK4QZPW8V2R6T9Y");
+        env.add_note(&note);
+        env.build_index().expect("Should build index");
+
+        env.cmd()
+            .mv("01HQ3K5M7N")
+            .with_title("New Name")
+            .assert()
+            .success();
+
+        // Check that the new filename exists
+        let entries: Vec<_> = std::fs::read_dir(env.notes_dir())
+            .expect("Should read directory")
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().is_some_and(|ext| ext == "md"))
+            .collect();
+
+        assert_eq!(entries.len(), 1);
+        let filename = entries[0].file_name().to_string_lossy().to_string();
+        assert!(
+            filename.contains("new-name"),
+            "Filename should contain slugified new title"
+        );
+        assert!(
+            !filename.contains("old-name"),
+            "Old filename should not exist"
+        );
+    }
+
+    #[test]
+    fn test_mv_title_updates_index() {
+        let env = TestEnv::new();
+
+        let note = TestNote::new("Index Test Note").id("01HQ3K5M7NXJK4QZPW8V2R6T9Y");
+        env.add_note(&note);
+        env.build_index().expect("Should build index");
+
+        env.cmd()
+            .mv("01HQ3K5M7N")
+            .with_title("Renamed Index Test")
+            .assert()
+            .success();
+
+        // Should find by new title
+        env.cmd()
+            .ls()
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("Renamed Index Test"))
+            .stdout(predicate::str::contains("Index Test Note").not());
+    }
+
+    // ===========================================
+    // Topic Move Tests
+    // ===========================================
+
+    #[test]
+    fn test_mv_changes_topic() {
+        let env = TestEnv::new();
+
+        let note = TestNote::new("Movable Note")
+            .id("01HQ3K5M7NXJK4QZPW8V2R6T9Y")
+            .topic("software/rust");
+        env.add_note(&note);
+        env.build_index().expect("Should build index");
+
+        env.cmd()
+            .mv("01HQ3K5M7N")
+            .with_topic("tutorials/beginner")
+            .assert()
+            .success();
+
+        // Should be in new topic
+        env.cmd()
+            .ls()
+            .args(["tutorials/beginner"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("Movable Note"));
+
+        // Should NOT be in old topic
+        env.cmd()
+            .ls()
+            .args(["software/rust"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("Movable Note").not());
+    }
+
+    #[test]
+    fn test_mv_replaces_all_topics() {
+        let env = TestEnv::new();
+
+        let note = TestNote::new("Multi Topic Note")
+            .id("01HQ3K5M7NXJK4QZPW8V2R6T9Y")
+            .topic("software/rust")
+            .topic("tutorials");
+        env.add_note(&note);
+        env.build_index().expect("Should build index");
+
+        // Move to single new topic
+        env.cmd()
+            .mv("01HQ3K5M7N")
+            .with_topic("archive")
+            .assert()
+            .success();
+
+        // Should only be in archive
+        env.cmd()
+            .ls()
+            .args(["archive"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("Multi Topic Note"));
+
+        env.cmd()
+            .ls()
+            .args(["software/rust"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("Multi Topic Note").not());
+    }
+
+    #[test]
+    fn test_mv_multiple_topics() {
+        let env = TestEnv::new();
+
+        let note = TestNote::new("Topic Test").id("01HQ3K5M7NXJK4QZPW8V2R6T9Y");
+        env.add_note(&note);
+        env.build_index().expect("Should build index");
+
+        env.cmd()
+            .mv("01HQ3K5M7N")
+            .with_topic("software")
+            .with_topic("tutorials")
+            .assert()
+            .success();
+
+        // Should be in both topics
+        env.cmd()
+            .ls()
+            .args(["software"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("Topic Test"));
+
+        env.cmd()
+            .ls()
+            .args(["tutorials"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("Topic Test"));
+    }
+
+    #[test]
+    fn test_mv_clear_topics() {
+        let env = TestEnv::new();
+
+        let note = TestNote::new("Clearable Note")
+            .id("01HQ3K5M7NXJK4QZPW8V2R6T9Y")
+            .topic("software/rust");
+        env.add_note(&note);
+        env.build_index().expect("Should build index");
+
+        env.cmd()
+            .mv("01HQ3K5M7N")
+            .with_clear_topics()
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("Cleared topics"));
+
+        // Should NOT be in old topic
+        env.cmd()
+            .ls()
+            .args(["software/rust"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("Clearable Note").not());
+
+        // Should still exist (in ls without topic filter)
+        env.cmd()
+            .ls()
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("Clearable Note"));
+    }
+
+    // ===========================================
+    // Combined Tests
+    // ===========================================
+
+    #[test]
+    fn test_mv_title_and_topic_together() {
+        let env = TestEnv::new();
+
+        let note = TestNote::new("Original Name")
+            .id("01HQ3K5M7NXJK4QZPW8V2R6T9Y")
+            .topic("software");
+        env.add_note(&note);
+        env.build_index().expect("Should build index");
+
+        env.cmd()
+            .mv("01HQ3K5M7N")
+            .with_title("New Name")
+            .with_topic("tutorials")
+            .assert()
+            .success();
+
+        // Should have new title and be in new topic
+        env.cmd()
+            .ls()
+            .args(["tutorials"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("New Name"));
+
+        // Should not be in old topic or have old name
+        env.cmd()
+            .ls()
+            .args(["software"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("New Name").not())
+            .stdout(predicate::str::contains("Original Name").not());
+    }
+
+    // ===========================================
+    // Error Handling Tests
+    // ===========================================
+
+    #[test]
+    fn test_mv_note_not_found() {
+        let env = TestEnv::new();
+        env.build_index().expect("Should build index");
+
+        env.cmd()
+            .mv("nonexistent")
+            .with_title("New Title")
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains("not found"));
+    }
+
+    #[test]
+    fn test_mv_no_changes_specified() {
+        let env = TestEnv::new();
+
+        let note = TestNote::new("Some Note").id("01HQ3K5M7NXJK4QZPW8V2R6T9Y");
+        env.add_note(&note);
+        env.build_index().expect("Should build index");
+
+        env.cmd()
+            .mv("01HQ3K5M7N")
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains("at least one of"));
+    }
+
+    #[test]
+    fn test_mv_empty_title_rejected() {
+        let env = TestEnv::new();
+
+        let note = TestNote::new("Some Note").id("01HQ3K5M7NXJK4QZPW8V2R6T9Y");
+        env.add_note(&note);
+        env.build_index().expect("Should build index");
+
+        env.cmd()
+            .mv("01HQ3K5M7N")
+            .with_title("")
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains("cannot be empty"));
+    }
+
+    #[test]
+    fn test_mv_invalid_topic_rejected() {
+        let env = TestEnv::new();
+
+        let note = TestNote::new("Some Note").id("01HQ3K5M7NXJK4QZPW8V2R6T9Y");
+        env.add_note(&note);
+        env.build_index().expect("Should build index");
+
+        env.cmd()
+            .mv("01HQ3K5M7N")
+            .with_topic("invalid topic with spaces")
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains("invalid topic"));
+    }
+
+    #[test]
+    fn test_mv_clear_topics_with_topic_rejected() {
+        let env = TestEnv::new();
+
+        let note = TestNote::new("Some Note").id("01HQ3K5M7NXJK4QZPW8V2R6T9Y");
+        env.add_note(&note);
+        env.build_index().expect("Should build index");
+
+        env.cmd()
+            .mv("01HQ3K5M7N")
+            .with_clear_topics()
+            .with_topic("software")
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains("mutually exclusive"));
+    }
+
+    #[test]
+    fn test_mv_ambiguous_note() {
+        let env = TestEnv::new();
+
+        // Two notes with same title prefix
+        let note1 = TestNote::new("Duplicate Title").id("01HQ3K5M7NXJK4QZPW8V2R6T9Y");
+        let note2 = TestNote::new("Duplicate Title").id("01HQ4A2R9PXJK4QZPW8V2R6T9Y");
+        env.add_note(&note1);
+        env.add_note(&note2);
+        env.build_index().expect("Should build index");
+
+        env.cmd()
+            .mv("Duplicate Title")
+            .with_title("New Title")
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains("ambiguous"));
+    }
+
+    // ===========================================
+    // Idempotency Tests
+    // ===========================================
+
+    #[test]
+    fn test_mv_same_title_is_idempotent() {
+        let env = TestEnv::new();
+
+        let note = TestNote::new("Same Title").id("01HQ3K5M7NXJK4QZPW8V2R6T9Y");
+        env.add_note(&note);
+        env.build_index().expect("Should build index");
+
+        // Move to same title
+        env.cmd()
+            .mv("01HQ3K5M7N")
+            .with_title("Same Title")
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("No changes needed"));
+    }
+
+    #[test]
+    fn test_mv_same_topics_is_idempotent() {
+        let env = TestEnv::new();
+
+        let note = TestNote::new("Same Topics Note")
+            .id("01HQ3K5M7NXJK4QZPW8V2R6T9Y")
+            .topic("software/rust");
+        env.add_note(&note);
+        env.build_index().expect("Should build index");
+
+        // Move to same topic
+        env.cmd()
+            .mv("01HQ3K5M7N")
+            .with_topic("software/rust")
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("No changes needed"));
+    }
+
+    // ===========================================
+    // Output Format Tests
+    // ===========================================
+
+    #[test]
+    fn test_mv_format_json() {
+        let env = TestEnv::new();
+
+        let note = TestNote::new("JSON Test Note").id("01HQ3K5M7NXJK4QZPW8V2R6T9Y");
+        env.add_note(&note);
+        env.build_index().expect("Should build index");
+
+        let output: serde_json::Value = env
+            .cmd()
+            .mv("01HQ3K5M7N")
+            .with_title("JSON Renamed")
+            .format_json()
+            .output_json();
+
+        assert!(output.is_object(), "Output should be a JSON object");
+        let data = output.get("data").expect("Should have 'data' field");
+        assert_eq!(data["title"], "JSON Renamed");
+        assert!(data["id"].as_str().unwrap().starts_with("01HQ3K5M7N"));
+        assert!(data["old_path"].as_str().is_some());
+        assert!(data["new_path"].as_str().is_some());
+    }
+
+    #[test]
+    fn test_mv_format_paths() {
+        let env = TestEnv::new();
+
+        let note = TestNote::new("Paths Test Note").id("01HQ3K5M7NXJK4QZPW8V2R6T9Y");
+        env.add_note(&note);
+        env.build_index().expect("Should build index");
+
+        let output = env
+            .cmd()
+            .mv("01HQ3K5M7N")
+            .with_title("Paths Renamed")
+            .format_paths()
+            .output_success();
+
+        // Should contain path information
+        assert!(output.contains("01HQ3K5M7N"));
+        assert!(output.contains(".md"));
+    }
+}

@@ -77,6 +77,9 @@ pub enum Command {
 
     /// Generate shell completions
     Completions(CompletionsArgs),
+
+    /// Move/rename a note (change title or topics)
+    Mv(MvArgs),
 }
 
 /// Arguments for the `index` command
@@ -279,4 +282,27 @@ pub struct CompletionsArgs {
     /// Shell to generate completions for (bash, zsh, fish)
     #[arg(value_enum)]
     pub shell: Shell,
+}
+
+/// Arguments for the `mv` command (move/rename note)
+#[derive(Parser, Debug)]
+pub struct MvArgs {
+    /// Note ID or title
+    pub note: String,
+
+    /// New title for the note (triggers file rename)
+    #[arg(long)]
+    pub title: Option<String>,
+
+    /// Topic for the note (replaces all topics, can be specified multiple times)
+    #[arg(short = 'T', long = "topic", action = ArgAction::Append)]
+    pub topics: Vec<String>,
+
+    /// Remove all topics from the note
+    #[arg(long)]
+    pub clear_topics: bool,
+
+    /// Output format
+    #[arg(short = 'f', long, value_enum, default_value_t = OutputFormat::Human)]
+    pub format: OutputFormat,
 }
