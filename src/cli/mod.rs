@@ -416,6 +416,10 @@ pub struct ExportArgs {
 /// Arguments for the `vaults` command
 #[derive(Parser, Debug)]
 pub struct VaultsArgs {
+    /// Set the default vault
+    #[arg(long)]
+    pub set_default: Option<String>,
+
     /// Output format
     #[arg(short = 'f', long, value_enum, default_value_t = OutputFormat::Human)]
     pub format: OutputFormat,

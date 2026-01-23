@@ -6,8 +6,16 @@ use crate::cli::config::Config;
 use crate::cli::output::OutputFormat;
 use crate::cli::VaultsArgs;
 
-/// Handle the vaults command - list configured vaults.
+/// Handle the vaults command - list configured vaults or set default.
 pub fn handle_vaults(args: &VaultsArgs, config: &Config) -> Result<()> {
+    // Handle --set-default
+    if let Some(ref vault_name) = args.set_default {
+        Config::set_default_vault(vault_name)?;
+        println!("Default vault set to '{}'", vault_name);
+        return Ok(());
+    }
+
+    // List vaults
     let vaults = config.list_vaults();
     let default_vault = config.default_vault.as_deref();
 
@@ -84,6 +92,7 @@ mod tests {
     fn handle_vaults_runs_without_error() {
         let config = make_config_with_vaults();
         let args = VaultsArgs {
+            set_default: None,
             format: OutputFormat::Human,
         };
         // Just verify it doesn't panic/error
@@ -95,6 +104,7 @@ mod tests {
     fn handle_vaults_empty_config() {
         let config = Config::default();
         let args = VaultsArgs {
+            set_default: None,
             format: OutputFormat::Human,
         };
         let result = handle_vaults(&args, &config);

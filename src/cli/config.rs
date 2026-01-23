@@ -1,12 +1,12 @@
 //! Configuration file support.
 
 use anyhow::{Context, Result, bail};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 /// Application configuration loaded from config file.
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, Serialize)]
 pub struct Config {
     /// Default notes directory (legacy, still supported)
     pub dir: Option<PathBuf>,
@@ -157,6 +157,68 @@ impl Config {
             .collect();
         vaults.sort_by(|a, b| a.0.cmp(b.0));
         vaults
+    }
+
+    /// Set the default vault and save to config file.
+    ///
+    /// This updates the config file in place, preserving other settings.
+    pub fn set_default_vault(vault_name: &str) -> Result<()> {
+        let config_path = Self::config_path();
+
+        // Verify the vault exists in the current config
+        let config = Self::load()?;
+        if !config.vaults.contains_key(vault_name) {
+            let available = config.list_vault_names();
+            if available.is_empty() {
+                bail!("vault '{}' not found (no vaults configured)", vault_name);
+            } else {
+                bail!(
+                    "vault '{}' not found. Available vaults: {}",
+                    vault_name,
+                    available.join(", ")
+                );
+            }
+        }
+
+        // Read existing content or start fresh
+        let content = if config_path.exists() {
+            std::fs::read_to_string(&config_path)
+                .with_context(|| format!("failed to read config file: {}", config_path.display()))?
+        } else {
+            String::new()
+        };
+
+        // Update or add the default_vault line
+        let new_line = format!("default_vault = \"{}\"", vault_name);
+        let new_content = if content.contains("default_vault") {
+            // Replace existing default_vault line
+            let re = regex::Regex::new(r#"(?m)^default_vault\s*=\s*"[^"]*"\s*$"#)
+                .expect("valid regex");
+            re.replace(&content, new_line.as_str()).to_string()
+        } else if content.is_empty() {
+            // New file
+            format!("{}\n", new_line)
+        } else {
+            // Add to existing file (before [vaults] section if it exists, otherwise at end)
+            if let Some(pos) = content.find("[vaults]") {
+                let (before, after) = content.split_at(pos);
+                format!("{}{}\n\n{}", before.trim_end(), new_line, after)
+            } else {
+                format!("{}\n{}\n", content.trim_end(), new_line)
+            }
+        };
+
+        // Ensure parent directory exists
+        if let Some(parent) = config_path.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("failed to create config directory: {}", parent.display()))?;
+        }
+
+        // Write the updated config
+        std::fs::write(&config_path, new_content)
+            .with_context(|| format!("failed to write config file: {}", config_path.display()))?;
+
+        Ok(())
     }
 
     /// Resolve the editor command.
