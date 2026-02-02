@@ -13,11 +13,10 @@ use cli::{
     Cli, Command,
     config::Config,
     handlers::{
-        handle_archive, handle_backlinks, handle_check, handle_completions, handle_edit,
-        handle_export, handle_index, handle_kinds, handle_link, handle_list, handle_mv,
-        handle_new, handle_prime, handle_rels, handle_search, handle_show, handle_tag,
-        handle_tags, handle_topics, handle_unarchive, handle_unlink, handle_untag,
-        handle_vaults,
+        handle_archive, handle_backlinks, handle_check, handle_complete_notes, handle_completions,
+        handle_edit, handle_export, handle_index, handle_kinds, handle_link, handle_list,
+        handle_mv, handle_new, handle_prime, handle_rels, handle_search, handle_show, handle_tag,
+        handle_tags, handle_topics, handle_unarchive, handle_unlink, handle_untag, handle_vaults,
     },
 };
 
@@ -54,5 +53,6 @@ pub fn run() -> Result<()> {
         Command::Vaults(args) => handle_vaults(args, &config),
         Command::Kinds(args) => handle_kinds(args, &notes_dir),
         Command::Prime(args) => handle_prime(args),
+        Command::CompleteNotes(args) => handle_complete_notes(args, &notes_dir),
     }
 }

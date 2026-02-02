@@ -102,6 +102,10 @@ pub enum Command {
 
     /// Output AI-friendly primer for this CLI
     Prime(PrimeArgs),
+
+    /// Complete note names (hidden, used by shell completions)
+    #[command(hide = true)]
+    CompleteNotes(CompleteNotesArgs),
 }
 
 /// Arguments for the `index` command
@@ -485,4 +489,15 @@ pub struct PrimeArgs {
     /// Include only specific sections (comma-separated: concept,schema,files,commands,topics,links,validation,workflows)
     #[arg(long, value_delimiter = ',')]
     pub sections: Vec<String>,
+}
+
+/// Arguments for the `complete-notes` command (hidden)
+#[derive(Parser, Debug)]
+pub struct CompleteNotesArgs {
+    /// Prefix to complete
+    pub prefix: String,
+
+    /// Maximum number of completions to return
+    #[arg(long, default_value = "50")]
+    pub limit: usize,
 }

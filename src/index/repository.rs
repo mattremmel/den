@@ -502,6 +502,9 @@ pub trait IndexRepository {
     /// Finds notes with a matching alias (case-insensitive).
     fn find_by_alias(&self, alias: &str) -> IndexResult<Vec<IndexedNote>>;
 
+    /// Finds notes whose title starts with the given prefix (case-insensitive).
+    fn find_by_title_prefix(&self, prefix: &str) -> IndexResult<Vec<IndexedNote>>;
+
     /// Finds all notes that link TO the given target note (backlinks).
     ///
     /// Returns notes that contain links pointing to `target_id`.

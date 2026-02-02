@@ -242,10 +242,8 @@ impl IndexRepository for SqliteIndex {
         if let Some(metadata) = note.metadata() {
             // Insert authors
             for author in metadata.authors() {
-                tx.conn().execute(
-                    "INSERT OR IGNORE INTO authors (name) VALUES (?)",
-                    [author],
-                )?;
+                tx.conn()
+                    .execute("INSERT OR IGNORE INTO authors (name) VALUES (?)", [author])?;
                 tx.conn().execute(
                     "INSERT INTO note_authors (note_id, author_id)
                      SELECT ?, id FROM authors WHERE name = ?",
@@ -712,6 +710,31 @@ impl IndexRepository for SqliteIndex {
                         notes.push(note);
                     }
                 }
+            }
+        }
+
+        Ok(notes)
+    }
+
+    fn find_by_title_prefix(&self, prefix: &str) -> IndexResult<Vec<IndexedNote>> {
+        if prefix.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id FROM notes WHERE title LIKE ? || '%' COLLATE NOCASE")?;
+
+        let note_ids: Vec<NoteId> = stmt
+            .query_map([prefix], |row| row.get::<_, String>(0))?
+            .filter_map(|r| r.ok())
+            .filter_map(|id_str| id_str.parse().ok())
+            .collect();
+
+        let mut notes = Vec::with_capacity(note_ids.len());
+        for id in note_ids {
+            if let Some(note) = self.get_note(&id)? {
+                notes.push(note);
             }
         }
 

@@ -2,6 +2,7 @@
 
 mod archive;
 mod check;
+mod complete;
 mod export;
 mod index;
 mod kinds;
@@ -19,6 +20,7 @@ mod vaults;
 #[cfg(test)]
 pub(crate) mod tests;
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
@@ -31,6 +33,7 @@ use crate::index::{FileResult, ProgressReporter};
 // Re-export public items
 pub use archive::{ARCHIVED_TAG, handle_archive, handle_unarchive};
 pub use check::handle_check;
+pub use complete::handle_complete_notes;
 pub use export::handle_export;
 pub use index::handle_index;
 pub use kinds::handle_kinds;
@@ -45,10 +48,64 @@ pub use search::handle_search;
 pub use show_edit::{handle_edit, handle_show};
 pub use vaults::handle_vaults;
 
+/// Custom zsh function for dynamic note completion.
+const ZSH_NOTE_COMPLETER: &str = r#"
+# Dynamic note completion using notes complete-notes
+_notes_complete_note() {
+    local -a completions
+    completions=("${(@f)$(notes complete-notes "${words[CURRENT]}" 2>/dev/null)}")
+    [[ -n "$completions" ]] && _describe 'note' completions
+}
+"#;
+
 /// Generate shell completions script for the given shell.
-pub fn generate_completions<W: std::io::Write>(shell: Shell, out: &mut W) -> Result<()> {
+pub fn generate_completions<W: Write>(shell: Shell, out: &mut W) -> Result<()> {
     let mut cmd = Cli::command();
-    generate(shell, &mut cmd, "notes", out);
+
+    match shell {
+        Shell::Zsh => {
+            // Generate base completions to a buffer
+            let mut base = Vec::new();
+            generate(shell, &mut cmd, "notes", &mut base);
+            let base_script = String::from_utf8_lossy(&base);
+
+            // Inject our custom note completer function at the start
+            out.write_all(ZSH_NOTE_COMPLETER.as_bytes())?;
+            out.write_all(b"\n")?;
+
+            // Replace _default completers for note arguments with our custom function
+            // These are the commands that accept note arguments
+            let modified = base_script
+                // show <note>
+                .replace("'1: :_default'", "'1:note:_notes_complete_note'")
+                // edit <note>
+                .replace(
+                    "'::note -- Note ID or title:_default'",
+                    "'::note -- Note ID or title:_notes_complete_note'",
+                )
+                // For commands with positional args, clap_complete generates different patterns
+                // We need to handle various formats
+                .replace(
+                    "':note -- Note ID or title:_default'",
+                    "':note -- Note ID or title:_notes_complete_note'",
+                )
+                .replace(
+                    "':source -- Source note ID or title:_default'",
+                    "':source -- Source note ID or title:_notes_complete_note'",
+                )
+                .replace(
+                    "':target -- Target note ID or title:_default'",
+                    "':target -- Target note ID or title:_notes_complete_note'",
+                );
+
+            out.write_all(modified.as_bytes())?;
+        }
+        _ => {
+            // For other shells, just use the default generation
+            generate(shell, &mut cmd, "notes", out);
+        }
+    }
+
     Ok(())
 }
 
