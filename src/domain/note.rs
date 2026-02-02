@@ -1,8 +1,9 @@
 //! Note struct representing a markdown note with frontmatter metadata.
 
-use crate::domain::{Link, NoteId, Tag, Topic};
+use crate::domain::{Link, NoteId, NoteKind, NoteMetadata, Tag, Topic};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::fmt;
 
 /// The kind of error that occurred when constructing a note.
@@ -44,6 +45,8 @@ impl std::error::Error for ParseNoteError {}
 /// - `aliases`: Alternative titles for search
 /// - `tags`: Flat labels for filtering
 /// - `links`: References to other notes with relationship context
+/// - `kind`: The type of content (book, paper, transcript, etc.)
+/// - `metadata`: Kind-specific metadata fields
 ///
 /// # Examples
 ///
@@ -67,6 +70,8 @@ pub struct Note {
     aliases: Vec<String>,
     tags: Vec<Tag>,
     links: Vec<Link>,
+    kind: NoteKind,
+    metadata: Option<NoteMetadata>,
 }
 
 impl Note {
@@ -108,6 +113,8 @@ impl Note {
             aliases: Vec::new(),
             tags: Vec::new(),
             links: Vec::new(),
+            kind: NoteKind::default(),
+            metadata: None,
         })
     }
 
@@ -165,6 +172,16 @@ impl Note {
     pub fn links(&self) -> &[Link] {
         &self.links
     }
+
+    /// Returns the note's kind.
+    pub fn kind(&self) -> &NoteKind {
+        &self.kind
+    }
+
+    /// Returns the note's metadata, if any.
+    pub fn metadata(&self) -> Option<&NoteMetadata> {
+        self.metadata.as_ref()
+    }
 }
 
 impl fmt::Display for Note {
@@ -185,6 +202,8 @@ impl fmt::Debug for Note {
             .field("aliases", &self.aliases)
             .field("tags", &self.tags)
             .field("links", &self.links)
+            .field("kind", &self.kind)
+            .field("metadata", &self.metadata)
             .finish()
     }
 }
@@ -200,6 +219,8 @@ pub struct NoteBuilder {
     aliases: Vec<String>,
     tags: Vec<Tag>,
     links: Vec<Link>,
+    kind: NoteKind,
+    metadata: Option<NoteMetadata>,
 }
 
 impl NoteBuilder {
@@ -219,6 +240,8 @@ impl NoteBuilder {
             aliases: Vec::new(),
             tags: Vec::new(),
             links: Vec::new(),
+            kind: NoteKind::default(),
+            metadata: None,
         }
     }
 
@@ -264,6 +287,18 @@ impl NoteBuilder {
         self
     }
 
+    /// Sets the note's kind.
+    pub fn kind(mut self, kind: NoteKind) -> Self {
+        self.kind = kind;
+        self
+    }
+
+    /// Sets the note's metadata.
+    pub fn metadata(mut self, metadata: Option<NoteMetadata>) -> Self {
+        self.metadata = metadata;
+        self
+    }
+
     /// Builds the Note.
     ///
     /// # Errors
@@ -289,6 +324,8 @@ impl NoteBuilder {
             aliases: self.aliases,
             tags: self.tags,
             links: self.links,
+            kind: self.kind,
+            metadata: self.metadata,
         })
     }
 }
@@ -362,6 +399,20 @@ impl Serialize for Note {
         if !self.links.is_empty() {
             map.serialize_entry("links", &self.links)?;
         }
+        // Only serialize kind if not default (generic)
+        if !self.kind.is_default() {
+            map.serialize_entry("kind", &self.kind)?;
+        }
+        // Only serialize metadata if present and non-empty
+        if let Some(ref metadata) = self.metadata
+            && !metadata.is_empty()
+        {
+            // Serialize the metadata as a JSON value that will become YAML
+            let value = metadata
+                .to_value()
+                .map_err(serde::ser::Error::custom)?;
+            map.serialize_entry("metadata", &value)?;
+        }
 
         map.end()
     }
@@ -388,9 +439,23 @@ impl<'de> Deserialize<'de> for Note {
             tags: Vec<Tag>,
             #[serde(default)]
             links: Vec<Link>,
+            #[serde(default)]
+            kind: NoteKind,
+            #[serde(default)]
+            metadata: Option<Value>,
         }
 
         let helper = NoteHelper::deserialize(deserializer)?;
+
+        // Parse metadata based on kind
+        let metadata = if let Some(value) = helper.metadata {
+            Some(
+                NoteMetadata::from_value(&helper.kind, value)
+                    .map_err(serde::de::Error::custom)?,
+            )
+        } else {
+            None
+        };
 
         Note::builder(helper.id, helper.title, helper.created, helper.modified)
             .description(helper.description)
@@ -398,6 +463,8 @@ impl<'de> Deserialize<'de> for Note {
             .aliases(helper.aliases)
             .tags(helper.tags)
             .links(helper.links)
+            .kind(helper.kind)
+            .metadata(metadata)
             .build()
             .map_err(serde::de::Error::custom)
     }
@@ -1234,5 +1301,360 @@ links:
         let err = Note::new(test_note_id(), "", test_datetime(), test_datetime()).unwrap_err();
         assert!(err.to_string().contains("title"));
         assert!(err.to_string().contains("cannot be empty"));
+    }
+
+    // ===========================================
+    // Phase 10: Kind and Metadata
+    // ===========================================
+
+    #[test]
+    fn new_note_has_default_kind() {
+        let note = Note::new(
+            test_note_id(),
+            "Test",
+            test_datetime(),
+            test_modified_datetime(),
+        )
+        .unwrap();
+
+        assert_eq!(note.kind(), &NoteKind::Generic);
+        assert!(note.kind().is_default());
+    }
+
+    #[test]
+    fn new_note_has_no_metadata() {
+        let note = Note::new(
+            test_note_id(),
+            "Test",
+            test_datetime(),
+            test_modified_datetime(),
+        )
+        .unwrap();
+
+        assert!(note.metadata().is_none());
+    }
+
+    #[test]
+    fn builder_sets_kind() {
+        let note = Note::builder(
+            test_note_id(),
+            "Test",
+            test_datetime(),
+            test_modified_datetime(),
+        )
+        .kind(NoteKind::Book)
+        .build()
+        .unwrap();
+
+        assert_eq!(note.kind(), &NoteKind::Book);
+        assert!(!note.kind().is_default());
+    }
+
+    #[test]
+    fn builder_sets_metadata() {
+        use crate::domain::BookMetadata;
+
+        let metadata = NoteMetadata::Book(BookMetadata::new(vec!["Author Name".to_string()]));
+
+        let note = Note::builder(
+            test_note_id(),
+            "Test Book",
+            test_datetime(),
+            test_modified_datetime(),
+        )
+        .kind(NoteKind::Book)
+        .metadata(Some(metadata))
+        .build()
+        .unwrap();
+
+        assert!(note.metadata().is_some());
+        assert_eq!(note.metadata().unwrap().authors(), &["Author Name"]);
+    }
+
+    #[test]
+    fn kind_not_serialized_when_default() {
+        let note = Note::new(
+            test_note_id(),
+            "Test",
+            test_datetime(),
+            test_modified_datetime(),
+        )
+        .unwrap();
+
+        let yaml = serde_yaml::to_string(&note).unwrap();
+        assert!(!yaml.contains("kind:"), "kind should not appear when default");
+    }
+
+    #[test]
+    fn kind_serialized_when_not_default() {
+        let note = Note::builder(
+            test_note_id(),
+            "Test",
+            test_datetime(),
+            test_modified_datetime(),
+        )
+        .kind(NoteKind::Book)
+        .build()
+        .unwrap();
+
+        let yaml = serde_yaml::to_string(&note).unwrap();
+        assert!(yaml.contains("kind: book"), "kind should appear when not default");
+    }
+
+    #[test]
+    fn metadata_not_serialized_when_empty() {
+        use crate::domain::BookMetadata;
+
+        let note = Note::builder(
+            test_note_id(),
+            "Test",
+            test_datetime(),
+            test_modified_datetime(),
+        )
+        .kind(NoteKind::Book)
+        .metadata(Some(NoteMetadata::Book(BookMetadata::default())))
+        .build()
+        .unwrap();
+
+        let yaml = serde_yaml::to_string(&note).unwrap();
+        assert!(!yaml.contains("metadata:"), "metadata should not appear when empty");
+    }
+
+    #[test]
+    fn metadata_serialized_when_non_empty() {
+        use crate::domain::BookMetadata;
+
+        let note = Note::builder(
+            test_note_id(),
+            "Test",
+            test_datetime(),
+            test_modified_datetime(),
+        )
+        .kind(NoteKind::Book)
+        .metadata(Some(NoteMetadata::Book(BookMetadata::new(vec!["Author".to_string()]))))
+        .build()
+        .unwrap();
+
+        let yaml = serde_yaml::to_string(&note).unwrap();
+        assert!(yaml.contains("metadata:"), "metadata should appear when non-empty");
+        assert!(yaml.contains("Author"));
+    }
+
+    #[test]
+    fn serde_roundtrip_book_note() {
+        use crate::domain::BookMetadata;
+
+        let metadata = BookMetadata {
+            authors: vec!["Martin Kleppmann".to_string()],
+            isbn: Some("978-1449373320".to_string()),
+            publisher: Some("O'Reilly Media".to_string()),
+            year: Some(2017),
+            extra: std::collections::HashMap::new(),
+        };
+
+        let note = Note::builder(
+            test_note_id(),
+            "Designing Data-Intensive Applications",
+            test_datetime(),
+            test_modified_datetime(),
+        )
+        .kind(NoteKind::Book)
+        .metadata(Some(NoteMetadata::Book(metadata)))
+        .build()
+        .unwrap();
+
+        let yaml = serde_yaml::to_string(&note).unwrap();
+        let parsed: Note = serde_yaml::from_str(&yaml).unwrap();
+
+        assert_eq!(parsed.kind(), &NoteKind::Book);
+        assert!(parsed.metadata().is_some());
+
+        let meta = parsed.metadata().unwrap();
+        assert_eq!(meta.authors(), &["Martin Kleppmann"]);
+    }
+
+    #[test]
+    fn serde_roundtrip_transcript_note() {
+        use crate::domain::{Chapter, TranscriptMetadata};
+
+        let metadata = TranscriptMetadata {
+            source: Some("https://youtube.com/watch?v=abc123".to_string()),
+            speakers: vec!["Host".to_string(), "Guest".to_string()],
+            duration_seconds: Some(3600),
+            chapters: vec![Chapter {
+                title: "Introduction".to_string(),
+                start_seconds: 0,
+            }],
+            extra: std::collections::HashMap::new(),
+        };
+
+        let note = Note::builder(
+            test_note_id(),
+            "Podcast Episode 1",
+            test_datetime(),
+            test_modified_datetime(),
+        )
+        .kind(NoteKind::Transcript)
+        .metadata(Some(NoteMetadata::Transcript(metadata)))
+        .build()
+        .unwrap();
+
+        let yaml = serde_yaml::to_string(&note).unwrap();
+        let parsed: Note = serde_yaml::from_str(&yaml).unwrap();
+
+        assert_eq!(parsed.kind(), &NoteKind::Transcript);
+        assert!(parsed.metadata().is_some());
+        assert_eq!(parsed.metadata().unwrap().speakers(), &["Host", "Guest"]);
+    }
+
+    #[test]
+    fn deserialize_book_from_yaml() {
+        let yaml = r#"
+id: 01HQ3K5M7NXJK4QZPW8V2R6T9Y
+title: Designing Data-Intensive Applications
+created: 2024-01-15T10:30:00Z
+modified: 2024-01-16T14:00:00Z
+kind: book
+metadata:
+  authors:
+    - Martin Kleppmann
+  isbn: "978-1449373320"
+  publisher: O'Reilly Media
+  year: 2017
+"#;
+        let note: Note = serde_yaml::from_str(yaml).unwrap();
+
+        assert_eq!(note.kind(), &NoteKind::Book);
+        assert!(note.metadata().is_some());
+
+        let meta = note.metadata().unwrap();
+        assert_eq!(meta.authors(), &["Martin Kleppmann"]);
+    }
+
+    #[test]
+    fn deserialize_transcript_from_yaml() {
+        let yaml = r#"
+id: 01HQ3K5M7NXJK4QZPW8V2R6T9Y
+title: Interview with Expert
+created: 2024-01-15T10:30:00Z
+modified: 2024-01-16T14:00:00Z
+kind: transcript
+metadata:
+  source: https://youtube.com/watch?v=abc123
+  speakers:
+    - Host Name
+    - Guest Name
+  duration_seconds: 3600
+  chapters:
+    - title: Introduction
+      start_seconds: 0
+    - title: Main Topic
+      start_seconds: 300
+"#;
+        let note: Note = serde_yaml::from_str(yaml).unwrap();
+
+        assert_eq!(note.kind(), &NoteKind::Transcript);
+        assert!(note.metadata().is_some());
+        assert_eq!(note.metadata().unwrap().speakers(), &["Host Name", "Guest Name"]);
+    }
+
+    #[test]
+    fn deserialize_paper_from_yaml() {
+        let yaml = r#"
+id: 01HQ3K5M7NXJK4QZPW8V2R6T9Y
+title: Attention Is All You Need
+created: 2024-01-15T10:30:00Z
+modified: 2024-01-16T14:00:00Z
+kind: paper
+metadata:
+  authors:
+    - Vaswani et al.
+  doi: "10.48550/arXiv.1706.03762"
+  journal: NeurIPS 2017
+  year: 2017
+"#;
+        let note: Note = serde_yaml::from_str(yaml).unwrap();
+
+        assert_eq!(note.kind(), &NoteKind::Paper);
+        assert!(note.metadata().is_some());
+        assert_eq!(note.metadata().unwrap().authors(), &["Vaswani et al."]);
+    }
+
+    #[test]
+    fn deserialize_unknown_kind_becomes_other() {
+        let yaml = r#"
+id: 01HQ3K5M7NXJK4QZPW8V2R6T9Y
+title: Custom Content
+created: 2024-01-15T10:30:00Z
+modified: 2024-01-16T14:00:00Z
+kind: custom-type
+metadata:
+  custom_field: custom_value
+"#;
+        let note: Note = serde_yaml::from_str(yaml).unwrap();
+
+        assert_eq!(note.kind(), &NoteKind::Other("custom-type".to_string()));
+        assert!(note.metadata().is_some());
+    }
+
+    #[test]
+    fn debug_includes_kind_and_metadata() {
+        use crate::domain::BookMetadata;
+
+        let note = Note::builder(
+            test_note_id(),
+            "Test",
+            test_datetime(),
+            test_modified_datetime(),
+        )
+        .kind(NoteKind::Book)
+        .metadata(Some(NoteMetadata::Book(BookMetadata::new(vec!["Author".to_string()]))))
+        .build()
+        .unwrap();
+
+        let debug = format!("{:?}", note);
+        assert!(debug.contains("kind"));
+        assert!(debug.contains("metadata"));
+        assert!(debug.contains("Book"));
+    }
+
+    #[test]
+    fn equality_considers_kind_and_metadata() {
+        use crate::domain::BookMetadata;
+
+        let note1 = Note::builder(
+            test_note_id(),
+            "Test",
+            test_datetime(),
+            test_modified_datetime(),
+        )
+        .kind(NoteKind::Book)
+        .build()
+        .unwrap();
+
+        let note2 = Note::builder(
+            test_note_id(),
+            "Test",
+            test_datetime(),
+            test_modified_datetime(),
+        )
+        .kind(NoteKind::Paper)
+        .build()
+        .unwrap();
+
+        assert_ne!(note1, note2);
+
+        let note3 = Note::builder(
+            test_note_id(),
+            "Test",
+            test_datetime(),
+            test_modified_datetime(),
+        )
+        .kind(NoteKind::Book)
+        .metadata(Some(NoteMetadata::Book(BookMetadata::new(vec!["Author".to_string()]))))
+        .build()
+        .unwrap();
+
+        assert_ne!(note1, note3);
     }
 }

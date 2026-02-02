@@ -1,10 +1,10 @@
 //! IndexRepository trait implementation for SqliteIndex.
 
 use super::SqliteIndex;
-use crate::domain::{Note, NoteId, Rel, Tag, Topic};
+use crate::domain::{Note, NoteId, NoteKind, NoteMetadata, Rel, Tag, Topic};
 use crate::index::{
-    IndexError, IndexRepository, IndexResult, IndexedNote, RelWithCount, SearchResult,
-    TagWithCount, TopicWithCount,
+    IndexError, IndexRepository, IndexResult, IndexedNote, KindWithCount, RelWithCount,
+    SearchResult, TagWithCount, TopicWithCount,
 };
 use crate::infra::ContentHash;
 use chrono::{DateTime, Utc};
@@ -25,7 +25,8 @@ impl IndexRepository for SqliteIndex {
                 n.id, n.title, n.description, n.created, n.modified, n.path, n.content_hash,
                 (SELECT GROUP_CONCAT(alias, '\x1F') FROM aliases WHERE note_id = n.id) as aliases,
                 (SELECT GROUP_CONCAT(t.path, '\x1F') FROM note_topics nt JOIN topics t ON nt.topic_id = t.id WHERE nt.note_id = n.id) as topics,
-                (SELECT GROUP_CONCAT(t.name, '\x1F') FROM note_tags ntg JOIN tags t ON ntg.tag_id = t.id WHERE ntg.note_id = n.id) as tags
+                (SELECT GROUP_CONCAT(t.name, '\x1F') FROM note_tags ntg JOIN tags t ON ntg.tag_id = t.id WHERE ntg.note_id = n.id) as tags,
+                n.kind, n.metadata
              FROM notes n
              WHERE n.id = ?",
         )?;
@@ -42,6 +43,8 @@ impl IndexRepository for SqliteIndex {
                 row.get::<_, Option<String>>(7)?,
                 row.get::<_, Option<String>>(8)?,
                 row.get::<_, Option<String>>(9)?,
+                row.get::<_, String>(10)?,
+                row.get::<_, Option<String>>(11)?,
             ))
         });
 
@@ -56,6 +59,8 @@ impl IndexRepository for SqliteIndex {
             aliases_str,
             topics_str,
             tags_str,
+            kind_str,
+            metadata_json,
         ) = match result {
             Ok(row) => row,
             Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(None),
@@ -96,6 +101,19 @@ impl IndexRepository for SqliteIndex {
             .map(|s| s.split(SEP).filter_map(|t| Tag::new(t).ok()).collect())
             .unwrap_or_default();
 
+        // Parse kind - FromStr is infallible (unknown kinds become Other)
+        let kind: NoteKind = kind_str.parse().unwrap();
+
+        // Parse metadata from JSON based on kind.
+        // Errors are intentionally swallowed: if the JSON is malformed or doesn't
+        // match the expected schema, we return None rather than failing the query.
+        // This ensures notes remain queryable even if their metadata is corrupted.
+        let metadata: Option<NoteMetadata> = metadata_json.and_then(|json| {
+            serde_json::from_str::<serde_json::Value>(&json)
+                .ok()
+                .and_then(|v| NoteMetadata::from_value(&kind, v).ok())
+        });
+
         // Build IndexedNote
         let mut builder =
             IndexedNote::builder(note_id, title, created, modified, path, content_hash);
@@ -104,7 +122,12 @@ impl IndexRepository for SqliteIndex {
             builder = builder.description(desc);
         }
 
-        builder = builder.topics(topics).aliases(aliases).tags(tags);
+        builder = builder
+            .topics(topics)
+            .aliases(aliases)
+            .tags(tags)
+            .kind(kind)
+            .metadata(metadata);
 
         Ok(Some(builder.build()))
     }
@@ -130,16 +153,28 @@ impl IndexRepository for SqliteIndex {
             Some(aliases_text.as_str())
         };
 
+        // Serialize metadata to JSON if present.
+        // Errors are intentionally swallowed: if serialization fails (unlikely),
+        // we store NULL rather than failing the upsert. The note itself is more
+        // important than its indexed metadata.
+        let kind_str = note.kind().as_str();
+        let metadata_json = note
+            .metadata()
+            .and_then(|m| m.to_value().ok())
+            .and_then(|v| serde_json::to_string(&v).ok());
+
         tx.conn().execute(
-            "INSERT INTO notes (id, path, title, description, created, modified, content_hash, aliases_text)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            "INSERT INTO notes (id, path, title, description, created, modified, content_hash, aliases_text, kind, metadata)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
              ON CONFLICT(id) DO UPDATE SET
                  path = excluded.path,
                  title = excluded.title,
                  description = excluded.description,
                  modified = excluded.modified,
                  content_hash = excluded.content_hash,
-                 aliases_text = excluded.aliases_text",
+                 aliases_text = excluded.aliases_text,
+                 kind = excluded.kind,
+                 metadata = excluded.metadata",
             rusqlite::params![
                 id_str,
                 path_str,
@@ -149,6 +184,8 @@ impl IndexRepository for SqliteIndex {
                 modified_str,
                 hash_str,
                 aliases_text_opt,
+                kind_str,
+                metadata_json,
             ],
         )?;
 
@@ -195,11 +232,46 @@ impl IndexRepository for SqliteIndex {
             )?;
         }
 
-        // 6. Delete existing links (cascade will remove link_rels)
+        // 6. Delete existing author/speaker junctions
+        tx.conn()
+            .execute("DELETE FROM note_authors WHERE note_id = ?", [&id_str])?;
+        tx.conn()
+            .execute("DELETE FROM note_speakers WHERE note_id = ?", [&id_str])?;
+
+        // 7. Insert authors from metadata (if applicable)
+        if let Some(metadata) = note.metadata() {
+            // Insert authors
+            for author in metadata.authors() {
+                tx.conn().execute(
+                    "INSERT OR IGNORE INTO authors (name) VALUES (?)",
+                    [author],
+                )?;
+                tx.conn().execute(
+                    "INSERT INTO note_authors (note_id, author_id)
+                     SELECT ?, id FROM authors WHERE name = ?",
+                    [&id_str, author],
+                )?;
+            }
+
+            // Insert speakers (for transcripts)
+            for speaker in metadata.speakers() {
+                tx.conn().execute(
+                    "INSERT OR IGNORE INTO speakers (name) VALUES (?)",
+                    [speaker],
+                )?;
+                tx.conn().execute(
+                    "INSERT INTO note_speakers (note_id, speaker_id)
+                     SELECT ?, id FROM speakers WHERE name = ?",
+                    [&id_str, speaker],
+                )?;
+            }
+        }
+
+        // 8. Delete existing links (cascade will remove link_rels)
         tx.conn()
             .execute("DELETE FROM links WHERE source_id = ?", [&id_str])?;
 
-        // 7. Insert links and their rels
+        // 9. Insert links and their rels
         for link in note.links() {
             let target_str = link.target().to_string();
             let context = link.context();
@@ -283,6 +355,49 @@ impl IndexRepository for SqliteIndex {
         let mut stmt = self.conn.prepare(query)?;
         let note_ids: Vec<NoteId> = stmt
             .query_map([tag.as_str()], |row| row.get::<_, String>(0))?
+            .filter_map(|r| r.ok())
+            .filter_map(|id_str| id_str.parse().ok())
+            .collect();
+
+        let mut notes = Vec::with_capacity(note_ids.len());
+        for id in note_ids {
+            if let Some(note) = self.get_note(&id)? {
+                notes.push(note);
+            }
+        }
+
+        Ok(notes)
+    }
+
+    fn list_by_kind(&self, kind: &NoteKind) -> IndexResult<Vec<IndexedNote>> {
+        let query = "SELECT id FROM notes WHERE kind = ?";
+
+        let mut stmt = self.conn.prepare(query)?;
+        let note_ids: Vec<NoteId> = stmt
+            .query_map([kind.as_str()], |row| row.get::<_, String>(0))?
+            .filter_map(|r| r.ok())
+            .filter_map(|id_str| id_str.parse().ok())
+            .collect();
+
+        let mut notes = Vec::with_capacity(note_ids.len());
+        for id in note_ids {
+            if let Some(note) = self.get_note(&id)? {
+                notes.push(note);
+            }
+        }
+
+        Ok(notes)
+    }
+
+    fn list_by_author(&self, author: &str) -> IndexResult<Vec<IndexedNote>> {
+        let query = "SELECT DISTINCT n.id FROM notes n
+                     JOIN note_authors na ON n.id = na.note_id
+                     JOIN authors a ON na.author_id = a.id
+                     WHERE a.name = ? COLLATE NOCASE";
+
+        let mut stmt = self.conn.prepare(query)?;
+        let note_ids: Vec<NoteId> = stmt
+            .query_map([author], |row| row.get::<_, String>(0))?
             .filter_map(|r| r.ok())
             .filter_map(|id_str| id_str.parse().ok())
             .collect();
@@ -445,6 +560,30 @@ impl IndexRepository for SqliteIndex {
             .collect();
 
         Ok(rels)
+    }
+
+    fn all_kinds(&self) -> IndexResult<Vec<KindWithCount>> {
+        let query = "SELECT kind, COUNT(*) as count
+                     FROM notes
+                     GROUP BY kind
+                     ORDER BY kind";
+
+        let mut stmt = self.conn.prepare(query)?;
+        let kinds = stmt
+            .query_map([], |row| {
+                let kind_str: String = row.get(0)?;
+                let count: u32 = row.get(1)?;
+                Ok((kind_str, count))
+            })?
+            .filter_map(|r| r.ok())
+            .map(|(kind_str, count)| {
+                // FromStr is infallible - unknown kinds become Other
+                let kind: NoteKind = kind_str.parse().unwrap();
+                KindWithCount::new(kind, count)
+            })
+            .collect();
+
+        Ok(kinds)
     }
 
     fn get_content_hash(&self, path: &Path) -> IndexResult<Option<ContentHash>> {
@@ -625,15 +764,17 @@ impl IndexRepository for SqliteIndex {
         {
             // Prepare all statements once for reuse
             let mut insert_note = tx.conn().prepare_cached(
-                "INSERT INTO notes (id, path, title, description, created, modified, content_hash, aliases_text)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                "INSERT INTO notes (id, path, title, description, created, modified, content_hash, aliases_text, kind, metadata)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
                  ON CONFLICT(id) DO UPDATE SET
                      path = excluded.path,
                      title = excluded.title,
                      description = excluded.description,
                      modified = excluded.modified,
                      content_hash = excluded.content_hash,
-                     aliases_text = excluded.aliases_text",
+                     aliases_text = excluded.aliases_text,
+                     kind = excluded.kind,
+                     metadata = excluded.metadata",
             )?;
             let mut delete_topics = tx
                 .conn()
@@ -647,6 +788,12 @@ impl IndexRepository for SqliteIndex {
             let mut delete_links = tx
                 .conn()
                 .prepare_cached("DELETE FROM links WHERE source_id = ?")?;
+            let mut delete_authors = tx
+                .conn()
+                .prepare_cached("DELETE FROM note_authors WHERE note_id = ?")?;
+            let mut delete_speakers = tx
+                .conn()
+                .prepare_cached("DELETE FROM note_speakers WHERE note_id = ?")?;
             let mut insert_topic = tx
                 .conn()
                 .prepare_cached("INSERT OR IGNORE INTO topics (path) VALUES (?)")?;
@@ -673,6 +820,20 @@ impl IndexRepository for SqliteIndex {
             let mut insert_link_rel = tx
                 .conn()
                 .prepare_cached("INSERT INTO link_rels (link_id, rel) VALUES (?, ?)")?;
+            let mut insert_author = tx
+                .conn()
+                .prepare_cached("INSERT OR IGNORE INTO authors (name) VALUES (?)")?;
+            let mut insert_author_junction = tx.conn().prepare_cached(
+                "INSERT INTO note_authors (note_id, author_id)
+                 SELECT ?, id FROM authors WHERE name = ?",
+            )?;
+            let mut insert_speaker = tx
+                .conn()
+                .prepare_cached("INSERT OR IGNORE INTO speakers (name) VALUES (?)")?;
+            let mut insert_speaker_junction = tx.conn().prepare_cached(
+                "INSERT INTO note_speakers (note_id, speaker_id)
+                 SELECT ?, id FROM speakers WHERE name = ?",
+            )?;
 
             for (note, content_hash, path) in notes {
                 let id_str = note.id().to_string();
@@ -687,6 +848,13 @@ impl IndexRepository for SqliteIndex {
                     Some(aliases_text.as_str())
                 };
 
+                // Serialize kind and metadata (errors swallowed - see upsert_note comment)
+                let kind_str = note.kind().as_str();
+                let metadata_json = note
+                    .metadata()
+                    .and_then(|m| m.to_value().ok())
+                    .and_then(|v| serde_json::to_string(&v).ok());
+
                 // 1. Upsert note
                 insert_note.execute(rusqlite::params![
                     id_str,
@@ -697,6 +865,8 @@ impl IndexRepository for SqliteIndex {
                     modified_str,
                     hash_str,
                     aliases_text_opt,
+                    kind_str,
+                    metadata_json,
                 ])?;
 
                 // 2. Delete existing junctions
@@ -704,6 +874,8 @@ impl IndexRepository for SqliteIndex {
                 delete_tags.execute([&id_str])?;
                 delete_aliases.execute([&id_str])?;
                 delete_links.execute([&id_str])?;
+                delete_authors.execute([&id_str])?;
+                delete_speakers.execute([&id_str])?;
 
                 // 3. Insert topics
                 for topic in note.topics() {
@@ -723,7 +895,19 @@ impl IndexRepository for SqliteIndex {
                     insert_alias.execute([&id_str, alias])?;
                 }
 
-                // 6. Insert links
+                // 6. Insert authors and speakers from metadata
+                if let Some(metadata) = note.metadata() {
+                    for author in metadata.authors() {
+                        insert_author.execute([author])?;
+                        insert_author_junction.execute([&id_str, author])?;
+                    }
+                    for speaker in metadata.speakers() {
+                        insert_speaker.execute([speaker])?;
+                        insert_speaker_junction.execute([&id_str, speaker])?;
+                    }
+                }
+
+                // 7. Insert links
                 for link in note.links() {
                     let target_str = link.target().to_string();
                     let context = link.context();

@@ -96,6 +96,9 @@ pub enum Command {
 
     /// List configured vaults
     Vaults(VaultsArgs),
+
+    /// List all note kinds with counts
+    Kinds(KindsArgs),
 }
 
 /// Arguments for the `index` command
@@ -115,6 +118,14 @@ pub struct ListArgs {
     /// Filter by tag (can be specified multiple times)
     #[arg(short, long = "tag", action = ArgAction::Append)]
     pub tags: Vec<String>,
+
+    /// Filter by kind (generic, book, paper, transcript, article)
+    #[arg(short = 'k', long)]
+    pub kind: Option<String>,
+
+    /// Filter by author (from book/paper/article metadata)
+    #[arg(long)]
+    pub author: Option<String>,
 
     /// Output format
     #[arg(short = 'f', long, value_enum, default_value_t = OutputFormat::Human)]
@@ -173,6 +184,10 @@ pub struct NewArgs {
     /// Short description
     #[arg(short = 'D', long)]
     pub desc: Option<String>,
+
+    /// Note kind (generic, book, paper, transcript, article)
+    #[arg(short = 'k', long)]
+    pub kind: Option<String>,
 
     /// Open in editor after creation
     #[arg(short, long)]
@@ -420,6 +435,14 @@ pub struct VaultsArgs {
     #[arg(long)]
     pub set_default: Option<String>,
 
+    /// Output format
+    #[arg(short = 'f', long, value_enum, default_value_t = OutputFormat::Human)]
+    pub format: OutputFormat,
+}
+
+/// Arguments for the `kinds` command
+#[derive(Parser, Debug)]
+pub struct KindsArgs {
     /// Output format
     #[arg(short = 'f', long, value_enum, default_value_t = OutputFormat::Human)]
     pub format: OutputFormat,

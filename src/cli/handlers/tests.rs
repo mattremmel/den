@@ -326,7 +326,7 @@ fn search_preserves_rank_order_after_filtering() {
 
 #[test]
 fn create_new_note_generates_valid_note() {
-    let result = create_new_note("Test Note", None, &[], &[]).unwrap();
+    let result = create_new_note("Test Note", None, &[], &[], None).unwrap();
     assert_eq!(result.note.title(), "Test Note");
     assert!(result.note.description().is_none());
     assert!(result.note.topics().is_empty());
@@ -336,7 +336,7 @@ fn create_new_note_generates_valid_note() {
 #[test]
 fn create_new_note_sets_timestamps_to_now() {
     let before = Utc::now();
-    let result = create_new_note("Test Note", None, &[], &[]).unwrap();
+    let result = create_new_note("Test Note", None, &[], &[], None).unwrap();
     let after = Utc::now();
 
     assert!(result.note.created() >= before);
@@ -346,14 +346,14 @@ fn create_new_note_sets_timestamps_to_now() {
 
 #[test]
 fn create_new_note_with_description() {
-    let result = create_new_note("Test Note", Some("A test description"), &[], &[]).unwrap();
+    let result = create_new_note("Test Note", Some("A test description"), &[], &[], None).unwrap();
     assert_eq!(result.note.description(), Some("A test description"));
 }
 
 #[test]
 fn create_new_note_with_valid_topics() {
     let topics = vec!["software/rust".to_string(), "reference".to_string()];
-    let result = create_new_note("Test Note", None, &topics, &[]).unwrap();
+    let result = create_new_note("Test Note", None, &topics, &[], None).unwrap();
     assert_eq!(result.note.topics().len(), 2);
     assert_eq!(result.note.topics()[0].to_string(), "software/rust");
     assert_eq!(result.note.topics()[1].to_string(), "reference");
@@ -362,7 +362,7 @@ fn create_new_note_with_valid_topics() {
 #[test]
 fn create_new_note_rejects_invalid_topic() {
     let topics = vec!["software@invalid".to_string()];
-    let result = create_new_note("Test Note", None, &topics, &[]);
+    let result = create_new_note("Test Note", None, &topics, &[], None);
     assert!(result.is_err());
     let err = result.unwrap_err().to_string();
     assert!(err.contains("invalid topic"));
@@ -371,14 +371,14 @@ fn create_new_note_rejects_invalid_topic() {
 #[test]
 fn create_new_note_normalizes_topics() {
     let topics = vec!["/software/rust/".to_string()];
-    let result = create_new_note("Test Note", None, &topics, &[]).unwrap();
+    let result = create_new_note("Test Note", None, &topics, &[], None).unwrap();
     assert_eq!(result.note.topics()[0].to_string(), "software/rust");
 }
 
 #[test]
 fn create_new_note_with_valid_tags() {
     let tags = vec!["draft".to_string(), "important".to_string()];
-    let result = create_new_note("Test Note", None, &[], &tags).unwrap();
+    let result = create_new_note("Test Note", None, &[], &tags, None).unwrap();
     assert_eq!(result.note.tags().len(), 2);
     assert_eq!(result.note.tags()[0].as_str(), "draft");
     assert_eq!(result.note.tags()[1].as_str(), "important");
@@ -387,7 +387,7 @@ fn create_new_note_with_valid_tags() {
 #[test]
 fn create_new_note_rejects_invalid_tag() {
     let tags = vec!["has spaces".to_string()];
-    let result = create_new_note("Test Note", None, &[], &tags);
+    let result = create_new_note("Test Note", None, &[], &tags, None);
     assert!(result.is_err());
     let err = result.unwrap_err().to_string();
     assert!(err.contains("invalid tag"));
@@ -396,13 +396,13 @@ fn create_new_note_rejects_invalid_tag() {
 #[test]
 fn create_new_note_normalizes_tags_to_lowercase() {
     let tags = vec!["DRAFT".to_string()];
-    let result = create_new_note("Test Note", None, &[], &tags).unwrap();
+    let result = create_new_note("Test Note", None, &[], &tags, None).unwrap();
     assert_eq!(result.note.tags()[0].as_str(), "draft");
 }
 
 #[test]
 fn create_new_note_returns_correct_filename() {
-    let result = create_new_note("API Design", None, &[], &[]).unwrap();
+    let result = create_new_note("API Design", None, &[], &[], None).unwrap();
     // Should be 10-char prefix + slug + .md
     assert!(result.filename.ends_with("-api-design.md"));
     assert_eq!(result.filename.len(), 10 + 1 + "api-design".len() + 3);
@@ -410,7 +410,7 @@ fn create_new_note_returns_correct_filename() {
 
 #[test]
 fn create_new_note_rejects_empty_title() {
-    let result = create_new_note("", None, &[], &[]);
+    let result = create_new_note("", None, &[], &[], None);
     assert!(result.is_err());
     let err = result.unwrap_err().to_string();
     assert!(err.contains("empty"));
@@ -418,7 +418,7 @@ fn create_new_note_rejects_empty_title() {
 
 #[test]
 fn create_new_note_rejects_whitespace_only_title() {
-    let result = create_new_note("   ", None, &[], &[]);
+    let result = create_new_note("   ", None, &[], &[], None);
     assert!(result.is_err());
     let err = result.unwrap_err().to_string();
     assert!(err.contains("empty"));
@@ -443,6 +443,7 @@ mod handle_new_tests {
             topics: vec![],
             tags: vec![],
             desc: None,
+            kind: None,
             edit: false,
         }
     }
@@ -495,6 +496,7 @@ mod handle_new_tests {
             topics: vec!["software/rust".to_string()],
             tags: vec!["draft".to_string()],
             desc: Some("A test description".to_string()),
+            kind: None,
             edit: false,
         };
         let config = test_config();
@@ -542,6 +544,7 @@ mod handle_new_tests {
             topics: vec!["invalid@topic".to_string()],
             tags: vec![],
             desc: None,
+            kind: None,
             edit: false,
         };
         let config = test_config();
@@ -558,6 +561,7 @@ mod handle_new_tests {
             topics: vec![],
             tags: vec!["has spaces".to_string()],
             desc: None,
+            kind: None,
             edit: false,
         };
         let config = test_config();

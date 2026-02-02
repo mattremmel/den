@@ -8,7 +8,7 @@ use std::process::Command;
 use super::index_db_path;
 use crate::cli::NewArgs;
 use crate::cli::config::Config;
-use crate::domain::{Note, NoteId, Tag, Topic};
+use crate::domain::{Note, NoteId, NoteKind, Tag, Topic};
 use crate::index::{IndexBuilder, SqliteIndex};
 use crate::infra::{generate_filename, read_note, write_note};
 
@@ -21,7 +21,7 @@ pub struct NewNoteResult {
 
 /// Creates a new note from the given arguments (pure function, no I/O).
 ///
-/// Validates the title, topics, and tags, then constructs a Note.
+/// Validates the title, topics, tags, and kind, then constructs a Note.
 /// Returns the Note and the generated filename.
 ///
 /// # Errors
@@ -30,11 +30,13 @@ pub struct NewNoteResult {
 /// - The title is empty or whitespace-only
 /// - Any topic is invalid
 /// - Any tag is invalid
+/// - The kind string is invalid
 pub fn create_new_note(
     title: &str,
     description: Option<&str>,
     topic_strs: &[String],
     tag_strs: &[String],
+    kind_str: Option<&str>,
 ) -> Result<NewNoteResult> {
     // Validate title
     let trimmed_title = title.trim();
@@ -58,6 +60,13 @@ pub fn create_new_note(
         tags.push(tag);
     }
 
+    // Parse and validate kind (strict: rejects unknown kinds)
+    let kind = if let Some(k) = kind_str {
+        NoteKind::parse_strict(k).with_context(|| format!("invalid kind '{}'", k))?
+    } else {
+        NoteKind::default()
+    };
+
     // Generate ID and timestamps
     let id = NoteId::new();
     let now = Utc::now();
@@ -67,6 +76,7 @@ pub fn create_new_note(
         .description(description.map(|s| s.to_string()))
         .topics(topics)
         .tags(tags)
+        .kind(kind)
         .build()
         .with_context(|| "failed to create note")?;
 
@@ -117,6 +127,8 @@ pub(crate) fn update_modified_timestamp(path: &Path) -> Result<()> {
     .aliases(parsed.note.aliases().to_vec())
     .tags(parsed.note.tags().to_vec())
     .links(parsed.note.links().to_vec())
+    .kind(parsed.note.kind().clone())
+    .metadata(parsed.note.metadata().cloned())
     .build()
     .with_context(|| "failed to rebuild note")?;
 
@@ -133,7 +145,13 @@ pub fn handle_new(args: &NewArgs, notes_dir: &Path, config: &Config) -> Result<(
     }
 
     // Create the note (validates inputs)
-    let result = create_new_note(&args.title, args.desc.as_deref(), &args.topics, &args.tags)?;
+    let result = create_new_note(
+        &args.title,
+        args.desc.as_deref(),
+        &args.topics,
+        &args.tags,
+        args.kind.as_deref(),
+    )?;
 
     // Construct file path
     let file_path = notes_dir.join(&result.filename);

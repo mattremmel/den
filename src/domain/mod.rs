@@ -1,6 +1,8 @@
-//! Core types: Note, Topic, Tag, NoteId (ULID), Link, Rel
+//! Core types: Note, Topic, Tag, NoteId (ULID), Link, Rel, NoteKind, metadata
 
+mod kind;
 mod link;
+mod metadata;
 mod note;
 mod note_id;
 mod tag;
@@ -8,7 +10,12 @@ mod topic;
 mod validate;
 mod validation;
 
+pub use kind::{NoteKind, ParseNoteKindError};
 pub use link::{Link, ParseLinkError, ParseRelError, Rel};
+pub use metadata::{
+    ArticleMetadata, BookMetadata, Chapter, GenericMetadata, NoteMetadata, PaperMetadata,
+    TranscriptMetadata,
+};
 pub use note::{Note, NoteBuilder, ParseNoteError};
 pub use note_id::{NoteId, ParseNoteIdError};
 pub use tag::{ParseTagError, Tag};

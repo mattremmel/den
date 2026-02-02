@@ -2,6 +2,9 @@
 
 use rusqlite::Connection;
 
+/// Current schema version (v3 adds kind and metadata)
+pub const CURRENT_SCHEMA_VERSION: i64 = 3;
+
 // ===========================================
 // Cycle 1: Schema Module Structure
 // ===========================================
@@ -21,6 +24,10 @@ use rusqlite::Connection;
 /// - `links` - Links between notes
 /// - `link_rels` - Relationship types for links
 /// - `schema_version` - Schema version tracking
+/// - `authors` - Author names (v3)
+/// - `note_authors` - Many-to-many junction for notes and authors (v3)
+/// - `speakers` - Speaker names (v3)
+/// - `note_speakers` - Many-to-many junction for notes and speakers (v3)
 pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
     // ===========================================
     // Cycle 11: Foreign Key Enforcement
@@ -40,7 +47,9 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
             modified TEXT NOT NULL,
             content_hash TEXT NOT NULL,
             body TEXT,
-            aliases_text TEXT
+            aliases_text TEXT,
+            kind TEXT NOT NULL DEFAULT 'generic',
+            metadata TEXT
         );",
     )?;
 
@@ -122,13 +131,58 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
     )?;
 
     // ===========================================
+    // Schema v3: Authors Table
+    // ===========================================
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS authors (
+            id INTEGER PRIMARY KEY,
+            name TEXT NOT NULL UNIQUE
+        );",
+    )?;
+
+    // ===========================================
+    // Schema v3: Note-Authors Junction
+    // ===========================================
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS note_authors (
+            note_id TEXT NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+            author_id INTEGER NOT NULL REFERENCES authors(id) ON DELETE CASCADE,
+            PRIMARY KEY (note_id, author_id)
+        );",
+    )?;
+
+    // ===========================================
+    // Schema v3: Speakers Table (for transcripts)
+    // ===========================================
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS speakers (
+            id INTEGER PRIMARY KEY,
+            name TEXT NOT NULL UNIQUE
+        );",
+    )?;
+
+    // ===========================================
+    // Schema v3: Note-Speakers Junction
+    // ===========================================
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS note_speakers (
+            note_id TEXT NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+            speaker_id INTEGER NOT NULL REFERENCES speakers(id) ON DELETE CASCADE,
+            PRIMARY KEY (note_id, speaker_id)
+        );",
+    )?;
+
+    // ===========================================
     // Cycle 10: Indexes
     // ===========================================
     conn.execute_batch(
         "CREATE INDEX IF NOT EXISTS idx_topics_path ON topics(path);
          CREATE INDEX IF NOT EXISTS idx_tags_name ON tags(name);
          CREATE INDEX IF NOT EXISTS idx_notes_created ON notes(created);
-         CREATE INDEX IF NOT EXISTS idx_notes_modified ON notes(modified);",
+         CREATE INDEX IF NOT EXISTS idx_notes_modified ON notes(modified);
+         CREATE INDEX IF NOT EXISTS idx_notes_kind ON notes(kind);
+         CREATE INDEX IF NOT EXISTS idx_authors_name ON authors(name);
+         CREATE INDEX IF NOT EXISTS idx_speakers_name ON speakers(name);",
     )?;
 
     // ===========================================
@@ -191,13 +245,60 @@ pub fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
         );",
     )?;
 
-    // Insert initial version if not exists (version 2 includes FTS5)
+    // Insert initial version if not exists (version 3 includes kind/metadata)
     conn.execute(
-        "INSERT OR IGNORE INTO schema_version (version, applied_at) VALUES (2, datetime('now'))",
+        "INSERT OR IGNORE INTO schema_version (version, applied_at) VALUES (?, datetime('now'))",
+        [CURRENT_SCHEMA_VERSION],
+    )?;
+
+    // Run migrations for existing databases
+    migrate_to_v3(conn)?;
+
+    Ok(())
+}
+
+/// Migrates existing v2 databases to v3 schema.
+///
+/// Adds the following if missing:
+/// - `kind` column to notes table
+/// - `metadata` column to notes table
+/// - `authors` table
+/// - `note_authors` junction table
+/// - `speakers` table
+/// - `note_speakers` junction table
+fn migrate_to_v3(conn: &Connection) -> rusqlite::Result<()> {
+    // Check if kind column exists
+    let has_kind = column_exists(conn, "notes", "kind")?;
+    if !has_kind {
+        conn.execute_batch("ALTER TABLE notes ADD COLUMN kind TEXT NOT NULL DEFAULT 'generic';")?;
+    }
+
+    // Check if metadata column exists
+    let has_metadata = column_exists(conn, "notes", "metadata")?;
+    if !has_metadata {
+        conn.execute_batch("ALTER TABLE notes ADD COLUMN metadata TEXT;")?;
+    }
+
+    // Create kind index if not exists
+    conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_notes_kind ON notes(kind);")?;
+
+    // Record v3 migration
+    conn.execute(
+        "INSERT OR IGNORE INTO schema_version (version, applied_at) VALUES (3, datetime('now'))",
         [],
     )?;
 
     Ok(())
+}
+
+/// Checks if a column exists in a table.
+fn column_exists(conn: &Connection, table: &str, column: &str) -> rusqlite::Result<bool> {
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({})", table))?;
+    let exists = stmt
+        .query_map([], |row| row.get::<_, String>(1))?
+        .filter_map(|r| r.ok())
+        .any(|name| name == column);
+    Ok(exists)
 }
 
 /// Returns the current schema version.
@@ -1411,12 +1512,12 @@ mod tests {
     }
 
     #[test]
-    fn schema_version_initialized_to_2() {
+    fn schema_version_initialized_to_3() {
         let conn = test_connection();
         create_schema(&conn).unwrap();
 
         let version = get_schema_version(&conn).unwrap();
-        assert_eq!(version, 2, "initial schema version should be 2 (with FTS)");
+        assert_eq!(version, 3, "initial schema version should be 3 (with kind/metadata)");
     }
 
     #[test]
@@ -1427,7 +1528,7 @@ mod tests {
         create_schema(&conn).unwrap();
 
         let version = get_schema_version(&conn).unwrap();
-        assert_eq!(version, 2, "schema version should remain 2");
+        assert_eq!(version, 3, "schema version should remain 3");
     }
 
     #[test]
@@ -1435,15 +1536,15 @@ mod tests {
         let conn = test_connection();
         create_schema(&conn).unwrap();
 
-        // Manually insert a higher version (simulating migration)
+        // Manually insert a higher version (simulating future migration)
         conn.execute(
-            "INSERT INTO schema_version (version, applied_at) VALUES (3, datetime('now'))",
+            "INSERT INTO schema_version (version, applied_at) VALUES (4, datetime('now'))",
             [],
         )
         .unwrap();
 
         let version = get_schema_version(&conn).unwrap();
-        assert_eq!(version, 3, "should return highest version");
+        assert_eq!(version, 4, "should return highest version");
     }
 
     // ===========================================
@@ -1981,12 +2082,12 @@ mod tests {
     // ===========================================
 
     #[test]
-    fn schema_version_is_2_with_fts() {
+    fn schema_version_is_3_with_kind_metadata() {
         let conn = test_connection();
         create_schema(&conn).unwrap();
 
         let version = get_schema_version(&conn).unwrap();
-        assert_eq!(version, 2, "schema version should be 2 with FTS");
+        assert_eq!(version, 3, "schema version should be 3 with kind/metadata");
     }
 
     // ===========================================
@@ -2141,5 +2242,291 @@ mod tests {
             )
             .unwrap();
         assert_eq!(count, 0, "Search for nonexistent term should return 0");
+    }
+
+    // ===========================================
+    // Schema v3: Kind and Metadata
+    // ===========================================
+
+    #[test]
+    fn notes_table_has_kind_column() {
+        let conn = test_connection();
+        create_schema(&conn).unwrap();
+
+        let columns = get_columns(&conn, "notes");
+        let column_names: Vec<&str> = columns.iter().map(|(n, _, _)| n.as_str()).collect();
+
+        assert!(column_names.contains(&"kind"), "notes should have kind column");
+    }
+
+    #[test]
+    fn notes_table_has_metadata_column() {
+        let conn = test_connection();
+        create_schema(&conn).unwrap();
+
+        let columns = get_columns(&conn, "notes");
+        let column_names: Vec<&str> = columns.iter().map(|(n, _, _)| n.as_str()).collect();
+
+        assert!(column_names.contains(&"metadata"), "notes should have metadata column");
+    }
+
+    #[test]
+    fn notes_kind_defaults_to_generic() {
+        let conn = test_connection();
+        create_schema(&conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO notes (id, path, title, created, modified, content_hash)
+             VALUES (?, ?, ?, ?, ?, ?)",
+            [
+                "01HQ3K5M7NXJK4QZPW8V2R6T9Y",
+                "test.md",
+                "Test Note",
+                "2024-01-15T10:30:00Z",
+                "2024-01-15T10:30:00Z",
+                "abc123",
+            ],
+        )
+        .unwrap();
+
+        let kind: String = conn
+            .query_row("SELECT kind FROM notes WHERE id = ?", ["01HQ3K5M7NXJK4QZPW8V2R6T9Y"], |row| {
+                row.get(0)
+            })
+            .unwrap();
+
+        assert_eq!(kind, "generic", "kind should default to 'generic'");
+    }
+
+    #[test]
+    fn notes_accepts_kind_and_metadata() {
+        let conn = test_connection();
+        create_schema(&conn).unwrap();
+
+        let result = conn.execute(
+            "INSERT INTO notes (id, path, title, created, modified, content_hash, kind, metadata)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            [
+                "01HQ3K5M7NXJK4QZPW8V2R6T9Y",
+                "test.md",
+                "Test Book",
+                "2024-01-15T10:30:00Z",
+                "2024-01-15T10:30:00Z",
+                "abc123",
+                "book",
+                r#"{"authors": ["Author Name"], "isbn": "123456"}"#,
+            ],
+        );
+        assert!(result.is_ok(), "should accept kind and metadata");
+    }
+
+    #[test]
+    fn idx_notes_kind_created() {
+        let conn = test_connection();
+        create_schema(&conn).unwrap();
+        assert!(
+            index_exists(&conn, "idx_notes_kind"),
+            "idx_notes_kind should exist"
+        );
+    }
+
+    // ===========================================
+    // Schema v3: Authors Table
+    // ===========================================
+
+    #[test]
+    fn authors_table_created() {
+        let conn = test_connection();
+        create_schema(&conn).unwrap();
+        assert!(table_exists(&conn, "authors"), "authors table should exist");
+    }
+
+    #[test]
+    fn authors_table_has_correct_columns() {
+        let conn = test_connection();
+        create_schema(&conn).unwrap();
+
+        let columns = get_columns(&conn, "authors");
+        let column_names: Vec<&str> = columns.iter().map(|(n, _, _)| n.as_str()).collect();
+
+        assert!(column_names.contains(&"id"), "should have id column");
+        assert!(column_names.contains(&"name"), "should have name column");
+    }
+
+    #[test]
+    fn authors_accepts_valid_row() {
+        let conn = test_connection();
+        create_schema(&conn).unwrap();
+
+        let result = conn.execute("INSERT INTO authors (name) VALUES (?)", ["Martin Kleppmann"]);
+        assert!(result.is_ok(), "should accept valid author");
+    }
+
+    #[test]
+    fn authors_enforces_unique_name() {
+        let conn = test_connection();
+        create_schema(&conn).unwrap();
+
+        conn.execute("INSERT INTO authors (name) VALUES (?)", ["Author Name"]).unwrap();
+        let result = conn.execute("INSERT INTO authors (name) VALUES (?)", ["Author Name"]);
+        assert!(result.is_err(), "should reject duplicate author name");
+    }
+
+    #[test]
+    fn idx_authors_name_created() {
+        let conn = test_connection();
+        create_schema(&conn).unwrap();
+        assert!(
+            index_exists(&conn, "idx_authors_name"),
+            "idx_authors_name should exist"
+        );
+    }
+
+    #[test]
+    fn idx_speakers_name_created() {
+        let conn = test_connection();
+        create_schema(&conn).unwrap();
+        assert!(
+            index_exists(&conn, "idx_speakers_name"),
+            "idx_speakers_name should exist"
+        );
+    }
+
+    // ===========================================
+    // Schema v3: Note-Authors Junction
+    // ===========================================
+
+    #[test]
+    fn note_authors_table_created() {
+        let conn = test_connection();
+        create_schema(&conn).unwrap();
+        assert!(
+            table_exists(&conn, "note_authors"),
+            "note_authors table should exist"
+        );
+    }
+
+    #[test]
+    fn note_authors_accepts_valid_junction() {
+        let conn = test_connection();
+        create_schema(&conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO notes (id, path, title, created, modified, content_hash, kind)
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [
+                "01HQ3K5M7NXJK4QZPW8V2R6T9Y",
+                "test.md",
+                "Test Book",
+                "2024-01-15T10:30:00Z",
+                "2024-01-15T10:30:00Z",
+                "abc123",
+                "book",
+            ],
+        )
+        .unwrap();
+        conn.execute("INSERT INTO authors (id, name) VALUES (1, ?)", ["Author Name"]).unwrap();
+
+        let result = conn.execute(
+            "INSERT INTO note_authors (note_id, author_id) VALUES (?, ?)",
+            ["01HQ3K5M7NXJK4QZPW8V2R6T9Y", "1"],
+        );
+        assert!(result.is_ok(), "should accept valid junction");
+    }
+
+    // ===========================================
+    // Schema v3: Speakers Table
+    // ===========================================
+
+    #[test]
+    fn speakers_table_created() {
+        let conn = test_connection();
+        create_schema(&conn).unwrap();
+        assert!(table_exists(&conn, "speakers"), "speakers table should exist");
+    }
+
+    #[test]
+    fn speakers_accepts_valid_row() {
+        let conn = test_connection();
+        create_schema(&conn).unwrap();
+
+        let result = conn.execute("INSERT INTO speakers (name) VALUES (?)", ["Host Name"]);
+        assert!(result.is_ok(), "should accept valid speaker");
+    }
+
+    // ===========================================
+    // Schema v3: Note-Speakers Junction
+    // ===========================================
+
+    #[test]
+    fn note_speakers_table_created() {
+        let conn = test_connection();
+        create_schema(&conn).unwrap();
+        assert!(
+            table_exists(&conn, "note_speakers"),
+            "note_speakers table should exist"
+        );
+    }
+
+    #[test]
+    fn note_speakers_accepts_valid_junction() {
+        let conn = test_connection();
+        create_schema(&conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO notes (id, path, title, created, modified, content_hash, kind)
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [
+                "01HQ3K5M7NXJK4QZPW8V2R6T9Y",
+                "test.md",
+                "Test Transcript",
+                "2024-01-15T10:30:00Z",
+                "2024-01-15T10:30:00Z",
+                "abc123",
+                "transcript",
+            ],
+        )
+        .unwrap();
+        conn.execute("INSERT INTO speakers (id, name) VALUES (1, ?)", ["Speaker Name"]).unwrap();
+
+        let result = conn.execute(
+            "INSERT INTO note_speakers (note_id, speaker_id) VALUES (?, ?)",
+            ["01HQ3K5M7NXJK4QZPW8V2R6T9Y", "1"],
+        );
+        assert!(result.is_ok(), "should accept valid junction");
+    }
+
+    // ===========================================
+    // Schema v3: Migration Tests
+    // ===========================================
+
+    #[test]
+    fn column_exists_function_works() {
+        let conn = test_connection();
+        create_schema(&conn).unwrap();
+
+        assert!(super::column_exists(&conn, "notes", "id").unwrap());
+        assert!(super::column_exists(&conn, "notes", "kind").unwrap());
+        assert!(!super::column_exists(&conn, "notes", "nonexistent").unwrap());
+    }
+
+    #[test]
+    fn migration_is_idempotent() {
+        let conn = test_connection();
+
+        // Run schema creation multiple times
+        create_schema(&conn).unwrap();
+        create_schema(&conn).unwrap();
+        create_schema(&conn).unwrap();
+
+        // Verify v3 tables exist
+        assert!(table_exists(&conn, "authors"));
+        assert!(table_exists(&conn, "note_authors"));
+        assert!(table_exists(&conn, "speakers"));
+        assert!(table_exists(&conn, "note_speakers"));
+
+        // Verify kind column exists
+        assert!(super::column_exists(&conn, "notes", "kind").unwrap());
+        assert!(super::column_exists(&conn, "notes", "metadata").unwrap());
     }
 }

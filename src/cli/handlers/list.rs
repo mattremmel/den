@@ -8,7 +8,7 @@ use super::{ARCHIVED_TAG, index_db_path, truncate_str};
 use crate::cli::ListArgs;
 use crate::cli::date_filter::DateFilter;
 use crate::cli::output::{NoteListing, Output, OutputFormat};
-use crate::domain::{Tag, Topic};
+use crate::domain::{NoteKind, Tag, Topic};
 use crate::index::{IndexRepository, IndexedNote, SqliteIndex};
 
 pub fn handle_list(args: &ListArgs, notes_dir: &Path) -> Result<()> {
@@ -48,13 +48,36 @@ pub fn handle_list(args: &ListArgs, notes_dir: &Path) -> Result<()> {
         notes.retain(|n| tag_ids.contains(n.id()));
     }
 
-    // 3. Exclude archived unless --include-archived
+    // 3. Filter by kind (strict: rejects unknown kinds)
+    if let Some(kind_str) = &args.kind {
+        let kind = NoteKind::parse_strict(kind_str)
+            .with_context(|| format!("invalid kind '{}'", kind_str))?;
+
+        let notes_with_kind = index
+            .list_by_kind(&kind)
+            .with_context(|| format!("failed to list notes with kind: {}", kind_str))?;
+
+        let kind_ids: HashSet<_> = notes_with_kind.iter().map(|n| n.id().clone()).collect();
+        notes.retain(|n| kind_ids.contains(n.id()));
+    }
+
+    // 4. Filter by author
+    if let Some(author) = &args.author {
+        let notes_by_author = index
+            .list_by_author(author)
+            .with_context(|| format!("failed to list notes by author: {}", author))?;
+
+        let author_ids: HashSet<_> = notes_by_author.iter().map(|n| n.id().clone()).collect();
+        notes.retain(|n| author_ids.contains(n.id()));
+    }
+
+    // 5. Exclude archived unless --include-archived
     if !args.include_archived {
         let archived_tag = Tag::new(ARCHIVED_TAG).expect("archived is a valid tag");
         notes.retain(|n| !n.tags().contains(&archived_tag));
     }
 
-    // 4. Filter by dates
+    // 6. Filter by dates
     if let Some(created_str) = &args.created {
         let filter = DateFilter::parse(created_str)
             .map_err(|e| anyhow::anyhow!("invalid --created filter: {}", e))?;
@@ -67,10 +90,10 @@ pub fn handle_list(args: &ListArgs, notes_dir: &Path) -> Result<()> {
         notes.retain(|n| filter.matches(n.modified()));
     }
 
-    // 5. Sort by modified date, most recent first
+    // 7. Sort by modified date, most recent first
     notes.sort_by_key(|n| std::cmp::Reverse(n.modified()));
 
-    // 6. Output based on format
+    // 8. Output based on format
     match args.format {
         OutputFormat::Human => {
             if notes.is_empty() {

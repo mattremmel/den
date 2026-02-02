@@ -1,6 +1,6 @@
 //! IndexRepository trait and result types.
 
-use crate::domain::{Note, NoteId, Rel, Tag, Topic};
+use crate::domain::{Note, NoteId, NoteKind, NoteMetadata, Rel, Tag, Topic};
 use crate::infra::ContentHash;
 use chrono::{DateTime, Utc};
 use std::path::{Path, PathBuf};
@@ -57,6 +57,8 @@ pub struct IndexedNote {
     topics: Vec<Topic>,
     aliases: Vec<String>,
     tags: Vec<Tag>,
+    kind: NoteKind,
+    metadata: Option<NoteMetadata>,
 }
 
 impl IndexedNote {
@@ -73,6 +75,8 @@ impl IndexedNote {
         topics: Vec<Topic>,
         aliases: Vec<String>,
         tags: Vec<Tag>,
+        kind: NoteKind,
+        metadata: Option<NoteMetadata>,
     ) -> Self {
         Self {
             id,
@@ -85,6 +89,8 @@ impl IndexedNote {
             topics,
             aliases,
             tags,
+            kind,
+            metadata,
         }
     }
 
@@ -138,6 +144,16 @@ impl IndexedNote {
         &self.tags
     }
 
+    /// Returns the note's kind (generic, book, paper, transcript, article, etc.).
+    pub fn kind(&self) -> &NoteKind {
+        &self.kind
+    }
+
+    /// Returns the note's metadata, if any.
+    pub fn metadata(&self) -> Option<&NoteMetadata> {
+        self.metadata.as_ref()
+    }
+
     // ===========================================
     // Cycle 3: IndexedNote Builder
     // ===========================================
@@ -162,6 +178,8 @@ impl IndexedNote {
             topics: Vec::new(),
             aliases: Vec::new(),
             tags: Vec::new(),
+            kind: NoteKind::default(),
+            metadata: None,
         }
     }
 }
@@ -178,6 +196,8 @@ pub struct IndexedNoteBuilder {
     topics: Vec<Topic>,
     aliases: Vec<String>,
     tags: Vec<Tag>,
+    kind: NoteKind,
+    metadata: Option<NoteMetadata>,
 }
 
 impl IndexedNoteBuilder {
@@ -205,6 +225,18 @@ impl IndexedNoteBuilder {
         self
     }
 
+    /// Sets the kind.
+    pub fn kind(mut self, kind: NoteKind) -> Self {
+        self.kind = kind;
+        self
+    }
+
+    /// Sets the metadata.
+    pub fn metadata(mut self, metadata: Option<NoteMetadata>) -> Self {
+        self.metadata = metadata;
+        self
+    }
+
     /// Builds the IndexedNote.
     pub fn build(self) -> IndexedNote {
         IndexedNote {
@@ -218,6 +250,8 @@ impl IndexedNoteBuilder {
             topics: self.topics,
             aliases: self.aliases,
             tags: self.tags,
+            kind: self.kind,
+            metadata: self.metadata,
         }
     }
 }
@@ -367,6 +401,34 @@ impl RelWithCount {
 }
 
 // ===========================================
+// Cycle 8b: KindWithCount Type
+// ===========================================
+
+/// A note kind with associated note count.
+#[derive(Debug, Clone, PartialEq)]
+pub struct KindWithCount {
+    kind: NoteKind,
+    count: u32,
+}
+
+impl KindWithCount {
+    /// Creates a new KindWithCount.
+    pub fn new(kind: NoteKind, count: u32) -> Self {
+        Self { kind, count }
+    }
+
+    /// Returns the kind.
+    pub fn kind(&self) -> &NoteKind {
+        &self.kind
+    }
+
+    /// Returns the count of notes with this kind.
+    pub fn count(&self) -> u32 {
+        self.count
+    }
+}
+
+// ===========================================
 // Cycle 9: IndexRepository Trait
 // ===========================================
 
@@ -401,6 +463,12 @@ pub trait IndexRepository {
     /// Lists notes with a specific tag.
     fn list_by_tag(&self, tag: &Tag) -> IndexResult<Vec<IndexedNote>>;
 
+    /// Lists notes with a specific kind.
+    fn list_by_kind(&self, kind: &NoteKind) -> IndexResult<Vec<IndexedNote>>;
+
+    /// Lists notes by a specific author (from metadata).
+    fn list_by_author(&self, author: &str) -> IndexResult<Vec<IndexedNote>>;
+
     /// Full-text search, returns results ranked by relevance (highest first).
     fn search(&self, query: &str) -> IndexResult<Vec<SearchResult>>;
 
@@ -412,6 +480,9 @@ pub trait IndexRepository {
 
     /// Returns all relationship types with link counts.
     fn all_rels(&self) -> IndexResult<Vec<RelWithCount>>;
+
+    /// Returns all note kinds with counts.
+    fn all_kinds(&self) -> IndexResult<Vec<KindWithCount>>;
 
     /// Gets content hash for incremental indexing.
     fn get_content_hash(&self, path: &Path) -> IndexResult<Option<ContentHash>>;
@@ -545,6 +616,8 @@ mod tests {
             vec![],
             vec![],
             vec![],
+            NoteKind::default(),
+            None,
         );
 
         assert_eq!(note.id(), &id);
@@ -557,6 +630,8 @@ mod tests {
         assert!(note.topics().is_empty());
         assert!(note.aliases().is_empty());
         assert!(note.tags().is_empty());
+        assert_eq!(note.kind(), &NoteKind::Generic);
+        assert!(note.metadata().is_none());
     }
 
     #[test]
@@ -572,6 +647,8 @@ mod tests {
             vec![],
             vec![],
             vec![],
+            NoteKind::default(),
+            None,
         );
         assert_eq!(note.description(), None);
     }
@@ -593,6 +670,8 @@ mod tests {
             topics.clone(),
             vec![],
             vec![],
+            NoteKind::default(),
+            None,
         );
         assert_eq!(note.topics(), &topics);
     }
@@ -611,6 +690,8 @@ mod tests {
             vec![],
             vec![],
             tags.clone(),
+            NoteKind::default(),
+            None,
         );
         assert_eq!(note.tags(), &tags);
     }
