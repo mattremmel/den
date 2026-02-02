@@ -144,6 +144,50 @@ pub fn handle_new(args: &NewArgs, notes_dir: &Path, config: &Config) -> Result<(
         bail!("notes directory does not exist: {}", notes_dir.display());
     }
 
+    // Validate --into path
+    if let Some(ref subdir) = args.into {
+        // Reject absolute paths
+        if subdir.is_absolute() {
+            bail!(
+                "--into must be a relative path, not absolute: {}",
+                subdir.display()
+            );
+        }
+
+        // Reject path traversal
+        for component in subdir.components() {
+            if matches!(component, std::path::Component::ParentDir) {
+                bail!("--into cannot contain '..': {}", subdir.display());
+            }
+        }
+    }
+
+    // Resolve target directory (vault root or subdirectory)
+    let target_dir = if let Some(ref subdir) = args.into {
+        let full_path = notes_dir.join(subdir);
+
+        if !full_path.exists() {
+            if args.mkdir {
+                std::fs::create_dir_all(&full_path).with_context(|| {
+                    format!("failed to create directory: {}", full_path.display())
+                })?;
+            } else {
+                bail!(
+                    "directory does not exist: {}\n  hint: use --mkdir to create it",
+                    full_path.display()
+                );
+            }
+        }
+
+        if !full_path.is_dir() {
+            bail!("not a directory: {}", full_path.display());
+        }
+
+        full_path
+    } else {
+        notes_dir.to_path_buf()
+    };
+
     // Create the note (validates inputs)
     let result = create_new_note(
         &args.title,
@@ -154,7 +198,7 @@ pub fn handle_new(args: &NewArgs, notes_dir: &Path, config: &Config) -> Result<(
     )?;
 
     // Construct file path
-    let file_path = notes_dir.join(&result.filename);
+    let file_path = target_dir.join(&result.filename);
 
     // Write the note file
     write_note(&file_path, &result.note, "")

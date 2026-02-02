@@ -192,6 +192,14 @@ pub struct NewArgs {
     #[arg(short = 'k', long)]
     pub kind: Option<String>,
 
+    /// Subdirectory within vault to place the note
+    #[arg(long)]
+    pub into: Option<PathBuf>,
+
+    /// Create subdirectory if it doesn't exist
+    #[arg(long, requires = "into")]
+    pub mkdir: bool,
+
     /// Open in editor after creation
     #[arg(short, long)]
     pub edit: bool,

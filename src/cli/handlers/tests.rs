@@ -444,6 +444,8 @@ mod handle_new_tests {
             tags: vec![],
             desc: None,
             kind: None,
+            into: None,
+            mkdir: false,
             edit: false,
         }
     }
@@ -497,6 +499,8 @@ mod handle_new_tests {
             tags: vec!["draft".to_string()],
             desc: Some("A test description".to_string()),
             kind: None,
+            into: None,
+            mkdir: false,
             edit: false,
         };
         let config = test_config();
@@ -545,6 +549,8 @@ mod handle_new_tests {
             tags: vec![],
             desc: None,
             kind: None,
+            into: None,
+            mkdir: false,
             edit: false,
         };
         let config = test_config();
@@ -562,6 +568,8 @@ mod handle_new_tests {
             tags: vec!["has spaces".to_string()],
             desc: None,
             kind: None,
+            into: None,
+            mkdir: false,
             edit: false,
         };
         let config = test_config();
