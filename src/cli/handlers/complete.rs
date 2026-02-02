@@ -22,6 +22,8 @@ struct Candidate {
 ///
 /// Outputs completion candidates in zsh format: `ID_PREFIX:Title`
 /// The colon separates the completion value from the description.
+///
+/// When prefix is empty, returns the most recently modified notes for discoverability.
 pub fn handle_complete_notes(args: &CompleteNotesArgs, notes_dir: &Path) -> Result<()> {
     let db_path = index_db_path(notes_dir);
     if !db_path.exists() {
@@ -36,71 +38,87 @@ pub fn handle_complete_notes(args: &CompleteNotesArgs, notes_dir: &Path) -> Resu
     let mut candidates: Vec<Candidate> = Vec::new();
     let mut seen_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
 
-    // 1. ID prefix matches (highest priority)
-    if !prefix.is_empty()
-        && prefix.chars().all(|c| c.is_ascii_alphanumeric())
-        && let Ok(notes) = index.find_by_id_prefix(prefix)
-    {
-        for note in notes {
-            let id_prefix = note.id().prefix();
-            if seen_ids.insert(id_prefix.clone()) {
-                candidates.push(Candidate {
-                    id_prefix,
-                    title: note.title().to_string(),
-                    score: i64::MAX, // Highest priority
-                });
-            }
-        }
-    }
+    // Handle empty prefix: show most recently modified notes
+    if prefix.is_empty() {
+        if let Ok(mut notes) = index.list_all() {
+            // Sort by modified date descending (most recent first)
+            notes.sort_by(|a, b| b.modified().cmp(&a.modified()));
 
-    // 2. Title prefix matches (second priority)
-    if !prefix.is_empty()
-        && let Ok(notes) = index.find_by_title_prefix(prefix)
-    {
-        for note in notes {
-            let id_prefix = note.id().prefix();
-            if seen_ids.insert(id_prefix.clone()) {
-                candidates.push(Candidate {
-                    id_prefix,
-                    title: note.title().to_string(),
-                    score: i64::MAX - 1, // High but below ID matches
-                });
-            }
-        }
-    }
-
-    // 3. Fuzzy matches (only if no exact matches and prefix >= 2 chars)
-    if candidates.is_empty() && prefix.len() >= 2 {
-        let matcher = SkimMatcherV2::default();
-
-        if let Ok(all_notes) = index.list_all() {
-            let mut fuzzy_candidates: Vec<(IndexedNote, i64)> = all_notes
-                .into_iter()
-                .filter_map(|note| {
-                    matcher
-                        .fuzzy_match(note.title(), prefix)
-                        .map(|score| (note, score))
-                })
-                .collect();
-
-            // Sort by score descending
-            fuzzy_candidates.sort_by(|a, b| b.1.cmp(&a.1));
-
-            for (note, score) in fuzzy_candidates {
+            for note in notes.into_iter().take(limit) {
                 let id_prefix = note.id().prefix();
                 if seen_ids.insert(id_prefix.clone()) {
                     candidates.push(Candidate {
                         id_prefix,
                         title: note.title().to_string(),
-                        score,
+                        score: 0, // All recent notes have equal priority
                     });
                 }
             }
         }
-    }
+    } else {
+        // 1. ID prefix matches (highest priority)
+        if prefix.chars().all(|c| c.is_ascii_alphanumeric()) {
+            if let Ok(notes) = index.find_by_id_prefix(prefix) {
+                for note in notes {
+                    let id_prefix = note.id().prefix();
+                    if seen_ids.insert(id_prefix.clone()) {
+                        candidates.push(Candidate {
+                            id_prefix,
+                            title: note.title().to_string(),
+                            score: i64::MAX, // Highest priority
+                        });
+                    }
+                }
+            }
+        }
 
-    // Sort: exact matches first (by score desc), then alphabetically by title
-    candidates.sort_by(|a, b| b.score.cmp(&a.score).then_with(|| a.title.cmp(&b.title)));
+        // 2. Title prefix matches (second priority)
+        if let Ok(notes) = index.find_by_title_prefix(prefix) {
+            for note in notes {
+                let id_prefix = note.id().prefix();
+                if seen_ids.insert(id_prefix.clone()) {
+                    candidates.push(Candidate {
+                        id_prefix,
+                        title: note.title().to_string(),
+                        score: i64::MAX - 1, // High but below ID matches
+                    });
+                }
+            }
+        }
+
+        // 3. Fuzzy matches (only if no exact matches and prefix >= 2 chars)
+        if candidates.is_empty() && prefix.len() >= 2 {
+            let matcher = SkimMatcherV2::default();
+
+            if let Ok(all_notes) = index.list_all() {
+                let mut fuzzy_candidates: Vec<(IndexedNote, i64)> = all_notes
+                    .into_iter()
+                    .filter_map(|note| {
+                        matcher
+                            .fuzzy_match(note.title(), prefix)
+                            .map(|score| (note, score))
+                    })
+                    .collect();
+
+                // Sort by score descending
+                fuzzy_candidates.sort_by(|a, b| b.1.cmp(&a.1));
+
+                for (note, score) in fuzzy_candidates {
+                    let id_prefix = note.id().prefix();
+                    if seen_ids.insert(id_prefix.clone()) {
+                        candidates.push(Candidate {
+                            id_prefix,
+                            title: note.title().to_string(),
+                            score,
+                        });
+                    }
+                }
+            }
+        }
+
+        // Sort: exact matches first (by score desc), then alphabetically by title
+        candidates.sort_by(|a, b| b.score.cmp(&a.score).then_with(|| a.title.cmp(&b.title)));
+    }
 
     // Limit and output
     for candidate in candidates.into_iter().take(limit) {

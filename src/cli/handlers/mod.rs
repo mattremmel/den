@@ -49,12 +49,28 @@ pub use show_edit::{handle_edit, handle_show};
 pub use vaults::handle_vaults;
 
 /// Custom zsh function for dynamic note completion.
+///
+/// Uses `compadd` with explicit value/description separation to ensure:
+/// 1. Only the ID prefix is inserted (no spaces or special characters)
+/// 2. The title is shown as a description during completion
+/// 3. Empty prefix shows recent notes for discoverability
 const ZSH_NOTE_COMPLETER: &str = r#"
 # Dynamic note completion using notes complete-notes
 _notes_complete_note() {
-    local -a completions
-    completions=("${(@f)$(notes complete-notes "${words[CURRENT]}" 2>/dev/null)}")
-    [[ -n "$completions" ]] && _describe 'note' completions
+    local -a vals descs
+    local line val desc prefix
+
+    # Get current word being typed (may be empty)
+    prefix="${words[CURRENT]:-}"
+
+    # Read completions: format is "ID_PREFIX:Title"
+    while IFS=: read -r val desc; do
+        [[ -n "$val" ]] && vals+=("$val") && descs+=("$val -- $desc")
+    done < <(notes complete-notes "$prefix" 2>/dev/null)
+
+    # Use compadd: -d for display strings, -a for array
+    # This inserts only the ID (vals) while showing "ID -- Title" (descs)
+    (( ${#vals[@]} )) && compadd -d descs -a vals
 }
 "#;
 
