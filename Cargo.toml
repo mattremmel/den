@@ -33,6 +33,7 @@ regex = "1"
 fuzzy-matcher = "0.3"
 shellexpand = "3"
 cross-xdg = "2"
+ignore = "0.4"
 
 [dev-dependencies]
 assert_cmd = "2"

@@ -3,6 +3,7 @@
 use crate::domain::Note;
 use crate::infra::content_hash::ContentHash;
 use crate::infra::frontmatter::{ParseError, ParsedNote, parse_with_hash, serialize};
+use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use std::io::{self, Write as IoWrite};
 use std::path::{Path, PathBuf};
 use tempfile::NamedTempFile;
@@ -172,10 +173,38 @@ pub fn write_note(path: &Path, note: &Note, body: &str) -> Result<(), FsError> {
     Ok(())
 }
 
+/// Loads a `.notesignore` file from the given directory.
+///
+/// Returns an empty matcher if the file doesn't exist.
+/// Logs warnings for invalid patterns but continues processing.
+fn load_notesignore(dir: &Path) -> Gitignore {
+    let ignore_path = dir.join(".notesignore");
+    if !ignore_path.exists() {
+        return Gitignore::empty();
+    }
+
+    let mut builder = GitignoreBuilder::new(dir);
+    if let Some(err) = builder.add(&ignore_path) {
+        eprintln!("Warning: failed to read .notesignore: {}", err);
+        return Gitignore::empty();
+    }
+
+    match builder.build() {
+        Ok(gitignore) => gitignore,
+        Err(err) => {
+            eprintln!("Warning: invalid .notesignore patterns: {}", err);
+            Gitignore::empty()
+        }
+    }
+}
+
 /// Scans a directory recursively for markdown (.md) files.
 ///
 /// Skips hidden files and directories (starting with `.`), including
 /// the `.index/` directory used for the SQLite index.
+///
+/// Also respects patterns in `.notesignore` (gitignore-style syntax)
+/// to exclude specific files or directories from scanning.
 ///
 /// Returns paths relative to the input directory.
 ///
@@ -195,6 +224,7 @@ pub fn scan_notes_directory(dir: &Path) -> Result<impl Iterator<Item = PathBuf>,
         });
     }
 
+    let gitignore = load_notesignore(dir);
     let dir_owned = dir.to_path_buf();
     let iter = WalkDir::new(dir)
         .follow_links(true)
@@ -203,7 +233,14 @@ pub fn scan_notes_directory(dir: &Path) -> Result<impl Iterator<Item = PathBuf>,
         .filter_map(Result::ok)
         .filter(|e| e.file_type().is_file())
         .filter(has_md_extension)
-        .map(move |e| e.path().strip_prefix(&dir_owned).unwrap().to_path_buf());
+        .filter_map(move |e| {
+            let rel_path = e.path().strip_prefix(&dir_owned).ok()?.to_path_buf();
+            if gitignore.matched(&rel_path, false).is_ignore() {
+                None
+            } else {
+                Some(rel_path)
+            }
+        });
 
     Ok(iter)
 }
@@ -1274,5 +1311,159 @@ modified: 2024-01-15T10:30:00Z
         for hash in &hashes[1..] {
             assert_eq!(first, hash);
         }
+    }
+
+    // ===========================================
+    // .notesignore Tests
+    // ===========================================
+
+    // --- Basic Pattern Matching ---
+
+    #[test]
+    fn scan_respects_notesignore_exact_filename() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("note.md"), "content").unwrap();
+        fs::write(dir.path().join("README.md"), "content").unwrap();
+        fs::write(dir.path().join(".notesignore"), "README.md").unwrap();
+
+        let result: Vec<_> = scan_notes_directory(dir.path()).unwrap().collect();
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0], PathBuf::from("note.md"));
+    }
+
+    #[test]
+    fn scan_respects_notesignore_multiple_patterns() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("note.md"), "content").unwrap();
+        fs::write(dir.path().join("README.md"), "content").unwrap();
+        fs::write(dir.path().join("CLAUDE.md"), "content").unwrap();
+        fs::write(dir.path().join(".notesignore"), "README.md\nCLAUDE.md").unwrap();
+
+        let result: Vec<_> = scan_notes_directory(dir.path()).unwrap().collect();
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0], PathBuf::from("note.md"));
+    }
+
+    #[test]
+    fn scan_respects_notesignore_glob_pattern() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("note.md"), "content").unwrap();
+        fs::write(dir.path().join("_draft1.md"), "content").unwrap();
+        fs::write(dir.path().join("_draft2.md"), "content").unwrap();
+        fs::write(dir.path().join(".notesignore"), "_*.md").unwrap();
+
+        let result: Vec<_> = scan_notes_directory(dir.path()).unwrap().collect();
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0], PathBuf::from("note.md"));
+    }
+
+    #[test]
+    fn scan_respects_notesignore_directory_pattern() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("note.md"), "content").unwrap();
+        fs::create_dir(dir.path().join("drafts")).unwrap();
+        fs::write(dir.path().join("drafts/draft1.md"), "content").unwrap();
+        fs::write(dir.path().join("drafts/draft2.md"), "content").unwrap();
+        // Use "drafts/**" to match all files under drafts directory
+        fs::write(dir.path().join(".notesignore"), "drafts/**").unwrap();
+
+        let result: Vec<_> = scan_notes_directory(dir.path()).unwrap().collect();
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0], PathBuf::from("note.md"));
+    }
+
+    // --- Edge Cases ---
+
+    #[test]
+    fn scan_works_without_notesignore() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("note.md"), "content").unwrap();
+        fs::write(dir.path().join("README.md"), "content").unwrap();
+
+        let mut result: Vec<_> = scan_notes_directory(dir.path()).unwrap().collect();
+        result.sort();
+
+        assert_eq!(result.len(), 2);
+        assert!(result.contains(&PathBuf::from("note.md")));
+        assert!(result.contains(&PathBuf::from("README.md")));
+    }
+
+    #[test]
+    fn scan_handles_empty_notesignore() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("note.md"), "content").unwrap();
+        fs::write(dir.path().join("README.md"), "content").unwrap();
+        fs::write(dir.path().join(".notesignore"), "").unwrap();
+
+        let mut result: Vec<_> = scan_notes_directory(dir.path()).unwrap().collect();
+        result.sort();
+
+        assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn scan_handles_notesignore_with_comments() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("note.md"), "content").unwrap();
+        fs::write(dir.path().join("README.md"), "content").unwrap();
+        fs::write(
+            dir.path().join(".notesignore"),
+            "# This is a comment\nREADME.md\n# Another comment",
+        )
+        .unwrap();
+
+        let result: Vec<_> = scan_notes_directory(dir.path()).unwrap().collect();
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0], PathBuf::from("note.md"));
+    }
+
+    #[test]
+    fn scan_handles_notesignore_negation_pattern() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("_draft1.md"), "content").unwrap();
+        fs::write(dir.path().join("_draft2.md"), "content").unwrap();
+        fs::write(dir.path().join("_important.md"), "content").unwrap();
+        fs::write(dir.path().join(".notesignore"), "_*.md\n!_important.md").unwrap();
+
+        let result: Vec<_> = scan_notes_directory(dir.path()).unwrap().collect();
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0], PathBuf::from("_important.md"));
+    }
+
+    #[test]
+    fn scan_notesignore_does_not_exclude_itself() {
+        // .notesignore is a hidden file, so it's already excluded by is_hidden()
+        // This test verifies that adding .notesignore to the ignore file doesn't cause issues
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("note.md"), "content").unwrap();
+        fs::write(dir.path().join(".notesignore"), ".notesignore\nnote.md").unwrap();
+
+        let result: Vec<_> = scan_notes_directory(dir.path()).unwrap().collect();
+
+        // note.md is ignored, .notesignore is hidden (already filtered)
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn scan_notesignore_handles_nested_paths() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("note.md"), "content").unwrap();
+        fs::create_dir(dir.path().join("sub")).unwrap();
+        fs::write(dir.path().join("sub/keep.md"), "content").unwrap();
+        fs::write(dir.path().join("sub/skip.md"), "content").unwrap();
+        fs::write(dir.path().join(".notesignore"), "sub/skip.md").unwrap();
+
+        let mut result: Vec<_> = scan_notes_directory(dir.path()).unwrap().collect();
+        result.sort();
+
+        assert_eq!(result.len(), 2);
+        assert!(result.contains(&PathBuf::from("note.md")));
+        assert!(result.contains(&PathBuf::from("sub/keep.md")));
     }
 }
