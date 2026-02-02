@@ -68,9 +68,9 @@ _notes_complete_note() {
         [[ -n "$val" ]] && vals+=("$val") && descs+=("$val -- $desc")
     done < <(notes complete-notes "$prefix" 2>/dev/null)
 
-    # Use compadd: -d for display strings, -a for array
+    # Use compadd: -U skips prefix matching (we already filtered), -d for display strings, -a for array
     # This inserts only the ID (vals) while showing "ID -- Title" (descs)
-    (( ${#vals[@]} )) && compadd -d descs -a vals
+    (( ${#vals[@]} )) && compadd -U -d descs -a vals
 }
 "#;
 
