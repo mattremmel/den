@@ -1961,6 +1961,229 @@ mod mv_tests {
         assert!(output.contains("01HQ3K5M7N"));
         assert!(output.contains(".md"));
     }
+
+    // ===========================================
+    // Physical File Move Tests (--into)
+    // ===========================================
+
+    #[test]
+    fn test_mv_into_moves_to_subdirectory() {
+        let env = TestEnv::new();
+
+        let note = TestNote::new("Move Me").id("01HQ3K5M7NXJK4QZPW8V2R6T9Y");
+        env.add_note(&note);
+        env.build_index().expect("Should build index");
+
+        env.cmd()
+            .mv("01HQ3K5M7N")
+            .with_into("subdir")
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("Moved 'Move Me' into subdir/"));
+
+        // File should exist in subdirectory
+        let subdir_path = env.notes_dir().join("subdir");
+        let entries: Vec<_> = std::fs::read_dir(&subdir_path)
+            .expect("Should read subdirectory")
+            .filter_map(|e| e.ok())
+            .collect();
+        assert_eq!(entries.len(), 1);
+
+        // File should NOT exist in root
+        let root_entries: Vec<_> = std::fs::read_dir(env.notes_dir())
+            .expect("Should read directory")
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().is_some_and(|ext| ext == "md"))
+            .collect();
+        assert_eq!(root_entries.len(), 0);
+    }
+
+    #[test]
+    fn test_mv_into_empty_moves_to_root() {
+        let env = TestEnv::new();
+
+        let note = TestNote::new("Subdir Note").id("01HQ3K5M7NXJK4QZPW8V2R6T9Y");
+        env.add_note_in_subdir(&note, "subdir");
+        env.build_index().expect("Should build index");
+
+        env.cmd()
+            .mv("01HQ3K5M7N")
+            .with_into("")
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("Moved 'Subdir Note' into ."));
+
+        // File should exist in root
+        let root_entries: Vec<_> = std::fs::read_dir(env.notes_dir())
+            .expect("Should read directory")
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().is_some_and(|ext| ext == "md"))
+            .collect();
+        assert_eq!(root_entries.len(), 1);
+
+        // File should NOT exist in subdirectory
+        let subdir_path = env.notes_dir().join("subdir");
+        let subdir_entries: Vec<_> = std::fs::read_dir(&subdir_path)
+            .expect("Should read subdirectory")
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().is_some_and(|ext| ext == "md"))
+            .collect();
+        assert_eq!(subdir_entries.len(), 0);
+    }
+
+    #[test]
+    fn test_mv_into_dot_moves_to_root() {
+        let env = TestEnv::new();
+
+        let note = TestNote::new("Subdir Note").id("01HQ3K5M7NXJK4QZPW8V2R6T9Y");
+        env.add_note_in_subdir(&note, "subdir");
+        env.build_index().expect("Should build index");
+
+        env.cmd()
+            .mv("01HQ3K5M7N")
+            .with_into(".")
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("Moved 'Subdir Note' into ."));
+
+        // File should exist in root
+        let root_entries: Vec<_> = std::fs::read_dir(env.notes_dir())
+            .expect("Should read directory")
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().is_some_and(|ext| ext == "md"))
+            .collect();
+        assert_eq!(root_entries.len(), 1);
+    }
+
+    #[test]
+    fn test_mv_into_with_title_changes_both() {
+        let env = TestEnv::new();
+
+        let note = TestNote::new("Original Title").id("01HQ3K5M7NXJK4QZPW8V2R6T9Y");
+        env.add_note(&note);
+        env.build_index().expect("Should build index");
+
+        env.cmd()
+            .mv("01HQ3K5M7N")
+            .with_into("subdir")
+            .with_title("New Title")
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("Moved 'New Title' into subdir/"))
+            .stdout(predicate::str::contains(
+                "Renamed 'Original Title' to 'New Title'",
+            ));
+
+        // File should exist in subdirectory with new title
+        let subdir_path = env.notes_dir().join("subdir");
+        let entries: Vec<_> = std::fs::read_dir(&subdir_path)
+            .expect("Should read subdirectory")
+            .filter_map(|e| e.ok())
+            .collect();
+        assert_eq!(entries.len(), 1);
+        let filename = entries[0].file_name().to_string_lossy().to_string();
+        assert!(filename.contains("new-title"));
+    }
+
+    #[test]
+    fn test_mv_into_creates_nested_directories() {
+        let env = TestEnv::new();
+
+        let note = TestNote::new("Deep Note").id("01HQ3K5M7NXJK4QZPW8V2R6T9Y");
+        env.add_note(&note);
+        env.build_index().expect("Should build index");
+
+        env.cmd()
+            .mv("01HQ3K5M7N")
+            .with_into("deep/nested/dir")
+            .assert()
+            .success();
+
+        // File should exist in nested directory
+        let nested_path = env.notes_dir().join("deep/nested/dir");
+        assert!(nested_path.exists(), "Nested directory should exist");
+        let entries: Vec<_> = std::fs::read_dir(&nested_path)
+            .expect("Should read nested directory")
+            .filter_map(|e| e.ok())
+            .collect();
+        assert_eq!(entries.len(), 1);
+    }
+
+    #[test]
+    fn test_mv_into_same_directory_is_idempotent() {
+        let env = TestEnv::new();
+
+        let note = TestNote::new("Subdir Note").id("01HQ3K5M7NXJK4QZPW8V2R6T9Y");
+        env.add_note_in_subdir(&note, "subdir");
+        env.build_index().expect("Should build index");
+
+        env.cmd()
+            .mv("01HQ3K5M7N")
+            .with_into("subdir")
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("No changes needed"));
+    }
+
+    #[test]
+    fn test_mv_title_preserves_subdirectory() {
+        // This tests the bug fix: renaming a note in a subdir should keep it there
+        let env = TestEnv::new();
+
+        let note = TestNote::new("Original Title").id("01HQ3K5M7NXJK4QZPW8V2R6T9Y");
+        env.add_note_in_subdir(&note, "subdir");
+        env.build_index().expect("Should build index");
+
+        env.cmd()
+            .mv("01HQ3K5M7N")
+            .with_title("Renamed Title")
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("subdir/"));
+
+        // File should still be in subdirectory
+        let subdir_path = env.notes_dir().join("subdir");
+        let subdir_entries: Vec<_> = std::fs::read_dir(&subdir_path)
+            .expect("Should read subdirectory")
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().is_some_and(|ext| ext == "md"))
+            .collect();
+        assert_eq!(subdir_entries.len(), 1);
+        let filename = subdir_entries[0].file_name().to_string_lossy().to_string();
+        assert!(filename.contains("renamed-title"));
+
+        // File should NOT exist in root
+        let root_entries: Vec<_> = std::fs::read_dir(env.notes_dir())
+            .expect("Should read directory")
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().is_some_and(|ext| ext == "md"))
+            .collect();
+        assert_eq!(root_entries.len(), 0);
+    }
+
+    #[test]
+    fn test_mv_into_json_output() {
+        let env = TestEnv::new();
+
+        let note = TestNote::new("JSON Move Note").id("01HQ3K5M7NXJK4QZPW8V2R6T9Y");
+        env.add_note(&note);
+        env.build_index().expect("Should build index");
+
+        let output: serde_json::Value = env
+            .cmd()
+            .mv("01HQ3K5M7N")
+            .with_into("subdir")
+            .format_json()
+            .output_json();
+
+        let data = output.get("data").expect("Should have 'data' field");
+        let new_path = data["new_path"].as_str().expect("Should have new_path");
+        assert!(
+            new_path.starts_with("subdir/"),
+            "new_path should be in subdir: {}",
+            new_path
+        );
+    }
 }
 
 // ===========================================

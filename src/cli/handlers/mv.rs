@@ -3,7 +3,7 @@
 use anyhow::{Context, Result, bail};
 use chrono::Utc;
 use serde::Serialize;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use super::index_db_path;
 use super::resolve::{ResolveResult, print_ambiguous_notes, resolve_note};
@@ -26,13 +26,13 @@ pub struct MvResult {
 /// Validates the mv command arguments.
 ///
 /// Returns an error if:
-/// - No change is specified (no --title, --topic, or --clear-topics)
+/// - No change is specified (no --title, --into, --topic, or --clear-topics)
 /// - Both --clear-topics and --topic are specified
 /// - --title is empty
 pub fn validate_mv_args(args: &MvArgs) -> Result<()> {
     // At least one change must be specified
-    if args.title.is_none() && args.topics.is_empty() && !args.clear_topics {
-        bail!("at least one of --title, --topic, or --clear-topics must be specified");
+    if args.title.is_none() && args.into.is_none() && args.topics.is_empty() && !args.clear_topics {
+        bail!("at least one of --title, --into, --topic, or --clear-topics must be specified");
     }
 
     // --clear-topics and --topic are mutually exclusive
@@ -94,11 +94,29 @@ pub fn handle_mv(args: &MvArgs, notes_dir: &Path) -> Result<()> {
                 parsed.note.topics().to_vec()
             };
 
+            // Determine target directory
+            let original_dir = indexed_note
+                .path()
+                .parent()
+                .map(|p| p.to_path_buf())
+                .unwrap_or_default();
+            let target_dir = if let Some(ref into_dir) = args.into {
+                if into_dir.is_empty() || into_dir == "." {
+                    PathBuf::new() // Root of notes_dir
+                } else {
+                    PathBuf::from(into_dir)
+                }
+            } else {
+                // Preserve original directory when not specified
+                original_dir.clone()
+            };
+
             // Check for idempotency (no actual changes)
             let title_unchanged = new_title == parsed.note.title();
             let topics_unchanged = new_topics == parsed.note.topics();
+            let dir_unchanged = target_dir == original_dir;
 
-            if title_unchanged && topics_unchanged {
+            if title_unchanged && topics_unchanged && dir_unchanged {
                 // No actual change needed
                 let path_str = indexed_note.path().to_string_lossy();
                 match args.format {
@@ -143,9 +161,18 @@ pub fn handle_mv(args: &MvArgs, notes_dir: &Path) -> Result<()> {
             .build()
             .with_context(|| "failed to rebuild note")?;
 
-            // Determine new filename
+            // Determine new filename and path
             let new_filename = generate_filename(updated_note.id(), updated_note.title());
-            let new_path = notes_dir.join(&new_filename);
+            let new_path = notes_dir.join(&target_dir).join(&new_filename);
+
+            // Create parent directory if needed
+            if let Some(parent) = new_path.parent() {
+                if !parent.exists() {
+                    std::fs::create_dir_all(parent).with_context(|| {
+                        format!("failed to create directory: {}", parent.display())
+                    })?;
+                }
+            }
 
             // Write to new path
             write_note(&new_path, &updated_note, &parsed.body)
@@ -164,9 +191,25 @@ pub fn handle_mv(args: &MvArgs, notes_dir: &Path) -> Result<()> {
                 let _ = builder.incremental_update(&mut idx);
             }
 
+            // Calculate the relative new path for output
+            let new_relative_path = target_dir.join(&new_filename);
+
             // Output result
             match args.format {
                 OutputFormat::Human => {
+                    if !dir_unchanged {
+                        let dir_display = if target_dir.as_os_str().is_empty() {
+                            ".".to_string()
+                        } else {
+                            format!("{}/", target_dir.display())
+                        };
+                        println!(
+                            "Moved '{}' into {} [{}]",
+                            new_title,
+                            dir_display,
+                            updated_note.id().prefix()
+                        );
+                    }
                     if !title_unchanged {
                         println!(
                             "Renamed '{}' to '{}' [{}]",
@@ -194,7 +237,11 @@ pub fn handle_mv(args: &MvArgs, notes_dir: &Path) -> Result<()> {
                         }
                     }
                     if old_path != new_path {
-                        println!("  {} -> {}", indexed_note.path().display(), new_filename);
+                        println!(
+                            "  {} -> {}",
+                            indexed_note.path().display(),
+                            new_relative_path.display()
+                        );
                     }
                 }
                 OutputFormat::Json => {
@@ -202,7 +249,7 @@ pub fn handle_mv(args: &MvArgs, notes_dir: &Path) -> Result<()> {
                         id: updated_note.id().to_string(),
                         title: new_title.to_string(),
                         old_path: indexed_note.path().to_string_lossy().to_string(),
-                        new_path: new_filename,
+                        new_path: new_relative_path.to_string_lossy().to_string(),
                         topics: new_topics.iter().map(|t| t.to_string()).collect(),
                     };
                     let out = Output::new(result);
@@ -234,9 +281,20 @@ mod tests {
     use crate::cli::output::OutputFormat;
 
     fn make_args(note: &str, title: Option<&str>, topics: Vec<&str>, clear_topics: bool) -> MvArgs {
+        make_args_with_into(note, title, None, topics, clear_topics)
+    }
+
+    fn make_args_with_into(
+        note: &str,
+        title: Option<&str>,
+        into: Option<&str>,
+        topics: Vec<&str>,
+        clear_topics: bool,
+    ) -> MvArgs {
         MvArgs {
             note: note.to_string(),
             title: title.map(|s| s.to_string()),
+            into: into.map(|s| s.to_string()),
             topics: topics.into_iter().map(|s| s.to_string()).collect(),
             clear_topics,
             format: OutputFormat::Human,
@@ -256,7 +314,7 @@ mod tests {
             result
                 .unwrap_err()
                 .to_string()
-                .contains("at least one of --title, --topic, or --clear-topics")
+                .contains("at least one of --title, --into, --topic, or --clear-topics")
         );
     }
 
@@ -342,5 +400,50 @@ mod tests {
     fn parse_topics_invalid() {
         let topics = parse_topics(&["invalid topic with spaces".to_string()]);
         assert!(topics.is_err());
+    }
+
+    // ===========================================
+    // --into Parameter Validation Tests
+    // ===========================================
+
+    #[test]
+    fn validate_accepts_into_only() {
+        let args = make_args_with_into("some-note", None, Some("subdir"), vec![], false);
+        let result = validate_mv_args(&args);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn validate_accepts_into_with_title() {
+        let args = make_args_with_into(
+            "some-note",
+            Some("New Title"),
+            Some("subdir"),
+            vec![],
+            false,
+        );
+        let result = validate_mv_args(&args);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn validate_accepts_into_with_topics() {
+        let args = make_args_with_into("some-note", None, Some("subdir"), vec!["software"], false);
+        let result = validate_mv_args(&args);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn validate_accepts_into_empty_for_root() {
+        let args = make_args_with_into("some-note", None, Some(""), vec![], false);
+        let result = validate_mv_args(&args);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn validate_accepts_into_dot_for_root() {
+        let args = make_args_with_into("some-note", None, Some("."), vec![], false);
+        let result = validate_mv_args(&args);
+        assert!(result.is_ok());
     }
 }

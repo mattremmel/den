@@ -46,7 +46,7 @@ impl DenCommand {
     /// Runs the command and returns an Assert for making assertions.
     #[allow(deprecated)]
     pub fn assert(self) -> assert_cmd::assert::Assert {
-        let mut cmd = Command::cargo_bin("den").expect("Failed to find den binary");
+        let mut cmd = Command::cargo_bin("notes").expect("Failed to find notes binary");
         cmd.args(&self.args);
         cmd.assert()
     }
@@ -228,6 +228,11 @@ impl DenCommand {
     /// Adds `--clear-topics` to the command (for mv).
     pub fn with_clear_topics(self) -> Self {
         self.args(["--clear-topics"])
+    }
+
+    /// Adds `--into <dir>` to the command (for mv).
+    pub fn with_into(self, dir: &str) -> Self {
+        self.args(["--into", dir])
     }
 
     /// Adds `--include-archived` / `-a` to the command.

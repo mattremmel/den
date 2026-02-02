@@ -348,6 +348,10 @@ pub struct MvArgs {
     #[arg(long)]
     pub title: Option<String>,
 
+    /// Target directory (relative to notes dir) to move the note into
+    #[arg(long)]
+    pub into: Option<String>,
+
     /// Topic for the note (replaces all topics, can be specified multiple times)
     #[arg(short = 'T', long = "topic", action = ArgAction::Append)]
     pub topics: Vec<String>,

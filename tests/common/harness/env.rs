@@ -53,6 +53,19 @@ impl TestEnv {
         path
     }
 
+    /// Adds a test note to a subdirectory within the notes directory.
+    ///
+    /// Creates the subdirectory if it doesn't exist.
+    pub fn add_note_in_subdir(&self, test_note: &TestNote, subdir: &str) -> PathBuf {
+        let note = test_note.to_note();
+        let filename = generate_filename(note.id(), note.title());
+        let subdir_path = self.notes_dir.join(subdir);
+        std::fs::create_dir_all(&subdir_path).expect("Failed to create subdirectory");
+        let path = subdir_path.join(&filename);
+        write_note(&path, &note, test_note.get_body()).expect("Failed to write test note");
+        path
+    }
+
     /// Builds the SQLite index from all notes in the directory.
     pub fn build_index(&self) -> Result<SqliteIndex> {
         let mut index = SqliteIndex::open(&self.index_path())?;
