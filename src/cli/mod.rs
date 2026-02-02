@@ -99,6 +99,9 @@ pub enum Command {
 
     /// List all note kinds with counts
     Kinds(KindsArgs),
+
+    /// Output AI-friendly primer for this CLI
+    Prime(PrimeArgs),
 }
 
 /// Arguments for the `index` command
@@ -446,4 +449,32 @@ pub struct KindsArgs {
     /// Output format
     #[arg(short = 'f', long, value_enum, default_value_t = OutputFormat::Human)]
     pub format: OutputFormat,
+}
+
+/// Output format for the prime command
+#[derive(Clone, Debug, Default, clap::ValueEnum)]
+pub enum PrimeFormat {
+    /// Human-readable markdown output
+    #[default]
+    Human,
+    /// Structured JSON for programmatic use
+    Json,
+    /// Just file paths (notes directory and index)
+    Paths,
+}
+
+/// Arguments for the `prime` command
+#[derive(Parser, Debug)]
+pub struct PrimeArgs {
+    /// Output format
+    #[arg(short = 'f', long, value_enum, default_value_t = PrimeFormat::Human)]
+    pub format: PrimeFormat,
+
+    /// Minimize output for smaller context windows
+    #[arg(long)]
+    pub compact: bool,
+
+    /// Include only specific sections (comma-separated: concept,schema,files,commands,topics,links,validation,workflows)
+    #[arg(long, value_delimiter = ',')]
+    pub sections: Vec<String>,
 }
