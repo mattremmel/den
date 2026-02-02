@@ -1,6 +1,6 @@
 //! Markdown to HTML conversion.
 
-use pulldown_cmark::{html, Options, Parser};
+use pulldown_cmark::{Options, Parser, html};
 
 /// Converts markdown text to HTML.
 ///

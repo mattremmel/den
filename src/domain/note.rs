@@ -408,9 +408,7 @@ impl Serialize for Note {
             && !metadata.is_empty()
         {
             // Serialize the metadata as a JSON value that will become YAML
-            let value = metadata
-                .to_value()
-                .map_err(serde::ser::Error::custom)?;
+            let value = metadata.to_value().map_err(serde::ser::Error::custom)?;
             map.serialize_entry("metadata", &value)?;
         }
 
@@ -449,10 +447,7 @@ impl<'de> Deserialize<'de> for Note {
 
         // Parse metadata based on kind
         let metadata = if let Some(value) = helper.metadata {
-            Some(
-                NoteMetadata::from_value(&helper.kind, value)
-                    .map_err(serde::de::Error::custom)?,
-            )
+            Some(NoteMetadata::from_value(&helper.kind, value).map_err(serde::de::Error::custom)?)
         } else {
             None
         };
@@ -1382,7 +1377,10 @@ links:
         .unwrap();
 
         let yaml = serde_yaml::to_string(&note).unwrap();
-        assert!(!yaml.contains("kind:"), "kind should not appear when default");
+        assert!(
+            !yaml.contains("kind:"),
+            "kind should not appear when default"
+        );
     }
 
     #[test]
@@ -1398,7 +1396,10 @@ links:
         .unwrap();
 
         let yaml = serde_yaml::to_string(&note).unwrap();
-        assert!(yaml.contains("kind: book"), "kind should appear when not default");
+        assert!(
+            yaml.contains("kind: book"),
+            "kind should appear when not default"
+        );
     }
 
     #[test]
@@ -1417,7 +1418,10 @@ links:
         .unwrap();
 
         let yaml = serde_yaml::to_string(&note).unwrap();
-        assert!(!yaml.contains("metadata:"), "metadata should not appear when empty");
+        assert!(
+            !yaml.contains("metadata:"),
+            "metadata should not appear when empty"
+        );
     }
 
     #[test]
@@ -1431,12 +1435,17 @@ links:
             test_modified_datetime(),
         )
         .kind(NoteKind::Book)
-        .metadata(Some(NoteMetadata::Book(BookMetadata::new(vec!["Author".to_string()]))))
+        .metadata(Some(NoteMetadata::Book(BookMetadata::new(vec![
+            "Author".to_string(),
+        ]))))
         .build()
         .unwrap();
 
         let yaml = serde_yaml::to_string(&note).unwrap();
-        assert!(yaml.contains("metadata:"), "metadata should appear when non-empty");
+        assert!(
+            yaml.contains("metadata:"),
+            "metadata should appear when non-empty"
+        );
         assert!(yaml.contains("Author"));
     }
 
@@ -1555,7 +1564,10 @@ metadata:
 
         assert_eq!(note.kind(), &NoteKind::Transcript);
         assert!(note.metadata().is_some());
-        assert_eq!(note.metadata().unwrap().speakers(), &["Host Name", "Guest Name"]);
+        assert_eq!(
+            note.metadata().unwrap().speakers(),
+            &["Host Name", "Guest Name"]
+        );
     }
 
     #[test]
@@ -1608,7 +1620,9 @@ metadata:
             test_modified_datetime(),
         )
         .kind(NoteKind::Book)
-        .metadata(Some(NoteMetadata::Book(BookMetadata::new(vec!["Author".to_string()]))))
+        .metadata(Some(NoteMetadata::Book(BookMetadata::new(vec![
+            "Author".to_string(),
+        ]))))
         .build()
         .unwrap();
 
@@ -1651,7 +1665,9 @@ metadata:
             test_modified_datetime(),
         )
         .kind(NoteKind::Book)
-        .metadata(Some(NoteMetadata::Book(BookMetadata::new(vec!["Author".to_string()]))))
+        .metadata(Some(NoteMetadata::Book(BookMetadata::new(vec![
+            "Author".to_string(),
+        ]))))
         .build()
         .unwrap();
 

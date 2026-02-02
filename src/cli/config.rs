@@ -192,8 +192,8 @@ impl Config {
         let new_line = format!("default_vault = \"{}\"", vault_name);
         let new_content = if content.contains("default_vault") {
             // Replace existing default_vault line
-            let re = regex::Regex::new(r#"(?m)^default_vault\s*=\s*"[^"]*"\s*$"#)
-                .expect("valid regex");
+            let re =
+                regex::Regex::new(r#"(?m)^default_vault\s*=\s*"[^"]*"\s*$"#).expect("valid regex");
             re.replace(&content, new_line.as_str()).to_string()
         } else if content.is_empty() {
             // New file
@@ -210,8 +210,9 @@ impl Config {
 
         // Ensure parent directory exists
         if let Some(parent) = config_path.parent() {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("failed to create config directory: {}", parent.display()))?;
+            std::fs::create_dir_all(parent).with_context(|| {
+                format!("failed to create config directory: {}", parent.display())
+            })?;
         }
 
         // Write the updated config
@@ -244,7 +245,10 @@ mod tests {
 
     fn make_config_with_vaults() -> Config {
         let mut vaults = HashMap::new();
-        vaults.insert("personal".to_string(), PathBuf::from("/home/user/notes/personal"));
+        vaults.insert(
+            "personal".to_string(),
+            PathBuf::from("/home/user/notes/personal"),
+        );
         vaults.insert("work".to_string(), PathBuf::from("/home/user/notes/work"));
         Config {
             dir: Some(PathBuf::from("/legacy/notes")),
@@ -343,7 +347,9 @@ mod tests {
     fn resolve_notes_dir_cli_dir_takes_precedence() {
         let config = make_config_with_vaults();
         let cli_dir = PathBuf::from("/cli/override");
-        let resolved = config.resolve_notes_dir(Some(&cli_dir), Some("work")).unwrap();
+        let resolved = config
+            .resolve_notes_dir(Some(&cli_dir), Some("work"))
+            .unwrap();
         assert_eq!(resolved.path, PathBuf::from("/cli/override"));
         assert!(resolved.vault_name.is_none());
     }

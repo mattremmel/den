@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
 
 use anyhow::Result;
-use minijinja::{context, Environment};
+use minijinja::{Environment, context};
 use serde::Serialize;
 
 use crate::domain::Note;
@@ -779,10 +779,7 @@ fn build_topic_tree(topic_notes: &BTreeMap<String, Vec<NoteInfo>>) -> Vec<TopicT
 
     for top_name in top_level {
         // Count notes in this topic
-        let count = topic_notes
-            .get(top_name)
-            .map(|v| v.len())
-            .unwrap_or(0);
+        let count = topic_notes.get(top_name).map(|v| v.len()).unwrap_or(0);
 
         // Find immediate children
         let prefix = format!("{}/", top_name);
@@ -860,10 +857,7 @@ fn write_index_json(
             .map(|k| k[prefix.len()..].to_string())
             .collect();
 
-        topics_map.insert(
-            top_name.to_string(),
-            TopicNode { count, children },
-        );
+        topics_map.insert(top_name.to_string(), TopicNode { count, children });
     }
 
     let index = SiteIndex {
@@ -1061,12 +1055,7 @@ mod tests {
     use tempfile::TempDir;
 
     /// Helper to create an indexed note for testing.
-    fn create_test_note(
-        notes_dir: &Path,
-        title: &str,
-        body: &str,
-        topics: &[&str],
-    ) -> IndexedNote {
+    fn create_test_note(notes_dir: &Path, title: &str, body: &str, topics: &[&str]) -> IndexedNote {
         create_test_note_with_tags(notes_dir, title, body, topics, &[])
     }
 
@@ -1096,7 +1085,8 @@ mod tests {
         let file_path = notes_dir.join(&filename);
         crate::infra::write_note(&file_path, &note, body).unwrap();
 
-        let content_hash = ContentHash::compute(std::fs::read_to_string(&file_path).unwrap().as_bytes());
+        let content_hash =
+            ContentHash::compute(std::fs::read_to_string(&file_path).unwrap().as_bytes());
 
         IndexedNote::builder(id, title, now, now, filename.into(), content_hash)
             .topics(topic_objs)
@@ -1125,8 +1115,12 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let notes_dir = TempDir::new().unwrap();
 
-        let indexed1 =
-            create_test_note(notes_dir.path(), "Rust Guide", "Rust content", &["software/rust"]);
+        let indexed1 = create_test_note(
+            notes_dir.path(),
+            "Rust Guide",
+            "Rust content",
+            &["software/rust"],
+        );
         let indexed2 = create_test_note(
             notes_dir.path(),
             "Python Guide",
@@ -1135,9 +1129,13 @@ mod tests {
         );
 
         let config = SiteConfig::default();
-        let result =
-            generate_site(&[indexed1, indexed2], temp_dir.path(), notes_dir.path(), &config)
-                .unwrap();
+        let result = generate_site(
+            &[indexed1, indexed2],
+            temp_dir.path(),
+            notes_dir.path(),
+            &config,
+        )
+        .unwrap();
 
         assert_eq!(result.notes_exported, 2);
         assert!(result.topic_pages > 0);
@@ -1234,7 +1232,8 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let notes_dir = TempDir::new().unwrap();
 
-        let indexed = create_test_note(notes_dir.path(), "Test Note", "Content", &["software/rust"]);
+        let indexed =
+            create_test_note(notes_dir.path(), "Test Note", "Content", &["software/rust"]);
 
         let config = SiteConfig::default();
         generate_site(&[indexed], temp_dir.path(), notes_dir.path(), &config).unwrap();
@@ -1249,7 +1248,11 @@ mod tests {
 
         // Should have topic tree with parent-child
         assert!(index.topics.contains_key("software"));
-        assert!(index.topics["software"].children.contains(&"rust".to_string()));
+        assert!(
+            index.topics["software"]
+                .children
+                .contains(&"rust".to_string())
+        );
     }
 
     #[test]
@@ -1276,8 +1279,18 @@ mod tests {
 
         // Tags list should have counts
         assert_eq!(index.tags.len(), 2);
-        assert!(index.tags.iter().any(|t| t.name == "reference" && t.count == 1));
-        assert!(index.tags.iter().any(|t| t.name == "important" && t.count == 1));
+        assert!(
+            index
+                .tags
+                .iter()
+                .any(|t| t.name == "reference" && t.count == 1)
+        );
+        assert!(
+            index
+                .tags
+                .iter()
+                .any(|t| t.name == "important" && t.count == 1)
+        );
     }
 
     #[test]

@@ -22,9 +22,7 @@ pub fn handle_kinds(args: &KindsArgs, notes_dir: &Path) -> Result<()> {
         .with_context(|| format!("failed to open index at {}", db_path.display()))?;
 
     // Use efficient SQL query to count by kind
-    let kinds = index
-        .all_kinds()
-        .with_context(|| "failed to list kinds")?;
+    let kinds = index.all_kinds().with_context(|| "failed to list kinds")?;
 
     // Calculate total note count
     let total_notes: u32 = kinds.iter().map(|k| k.count()).sum();

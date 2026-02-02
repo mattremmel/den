@@ -1517,7 +1517,10 @@ mod tests {
         create_schema(&conn).unwrap();
 
         let version = get_schema_version(&conn).unwrap();
-        assert_eq!(version, 3, "initial schema version should be 3 (with kind/metadata)");
+        assert_eq!(
+            version, 3,
+            "initial schema version should be 3 (with kind/metadata)"
+        );
     }
 
     #[test]
@@ -2256,7 +2259,10 @@ mod tests {
         let columns = get_columns(&conn, "notes");
         let column_names: Vec<&str> = columns.iter().map(|(n, _, _)| n.as_str()).collect();
 
-        assert!(column_names.contains(&"kind"), "notes should have kind column");
+        assert!(
+            column_names.contains(&"kind"),
+            "notes should have kind column"
+        );
     }
 
     #[test]
@@ -2267,7 +2273,10 @@ mod tests {
         let columns = get_columns(&conn, "notes");
         let column_names: Vec<&str> = columns.iter().map(|(n, _, _)| n.as_str()).collect();
 
-        assert!(column_names.contains(&"metadata"), "notes should have metadata column");
+        assert!(
+            column_names.contains(&"metadata"),
+            "notes should have metadata column"
+        );
     }
 
     #[test]
@@ -2290,9 +2299,11 @@ mod tests {
         .unwrap();
 
         let kind: String = conn
-            .query_row("SELECT kind FROM notes WHERE id = ?", ["01HQ3K5M7NXJK4QZPW8V2R6T9Y"], |row| {
-                row.get(0)
-            })
+            .query_row(
+                "SELECT kind FROM notes WHERE id = ?",
+                ["01HQ3K5M7NXJK4QZPW8V2R6T9Y"],
+                |row| row.get(0),
+            )
             .unwrap();
 
         assert_eq!(kind, "generic", "kind should default to 'generic'");
@@ -2358,7 +2369,10 @@ mod tests {
         let conn = test_connection();
         create_schema(&conn).unwrap();
 
-        let result = conn.execute("INSERT INTO authors (name) VALUES (?)", ["Martin Kleppmann"]);
+        let result = conn.execute(
+            "INSERT INTO authors (name) VALUES (?)",
+            ["Martin Kleppmann"],
+        );
         assert!(result.is_ok(), "should accept valid author");
     }
 
@@ -2367,7 +2381,8 @@ mod tests {
         let conn = test_connection();
         create_schema(&conn).unwrap();
 
-        conn.execute("INSERT INTO authors (name) VALUES (?)", ["Author Name"]).unwrap();
+        conn.execute("INSERT INTO authors (name) VALUES (?)", ["Author Name"])
+            .unwrap();
         let result = conn.execute("INSERT INTO authors (name) VALUES (?)", ["Author Name"]);
         assert!(result.is_err(), "should reject duplicate author name");
     }
@@ -2425,7 +2440,11 @@ mod tests {
             ],
         )
         .unwrap();
-        conn.execute("INSERT INTO authors (id, name) VALUES (1, ?)", ["Author Name"]).unwrap();
+        conn.execute(
+            "INSERT INTO authors (id, name) VALUES (1, ?)",
+            ["Author Name"],
+        )
+        .unwrap();
 
         let result = conn.execute(
             "INSERT INTO note_authors (note_id, author_id) VALUES (?, ?)",
@@ -2442,7 +2461,10 @@ mod tests {
     fn speakers_table_created() {
         let conn = test_connection();
         create_schema(&conn).unwrap();
-        assert!(table_exists(&conn, "speakers"), "speakers table should exist");
+        assert!(
+            table_exists(&conn, "speakers"),
+            "speakers table should exist"
+        );
     }
 
     #[test]
@@ -2487,7 +2509,11 @@ mod tests {
             ],
         )
         .unwrap();
-        conn.execute("INSERT INTO speakers (id, name) VALUES (1, ?)", ["Speaker Name"]).unwrap();
+        conn.execute(
+            "INSERT INTO speakers (id, name) VALUES (1, ?)",
+            ["Speaker Name"],
+        )
+        .unwrap();
 
         let result = conn.execute(
             "INSERT INTO note_speakers (note_id, speaker_id) VALUES (?, ?)",

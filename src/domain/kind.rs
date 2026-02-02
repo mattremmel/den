@@ -231,7 +231,10 @@ mod tests {
         assert_eq!("book".parse::<NoteKind>().unwrap(), NoteKind::Book);
         assert_eq!("BOOK".parse::<NoteKind>().unwrap(), NoteKind::Book);
         assert_eq!("paper".parse::<NoteKind>().unwrap(), NoteKind::Paper);
-        assert_eq!("transcript".parse::<NoteKind>().unwrap(), NoteKind::Transcript);
+        assert_eq!(
+            "transcript".parse::<NoteKind>().unwrap(),
+            NoteKind::Transcript
+        );
         assert_eq!("article".parse::<NoteKind>().unwrap(), NoteKind::Article);
     }
 
@@ -253,11 +256,20 @@ mod tests {
 
     #[test]
     fn parse_strict_accepts_known_kinds() {
-        assert_eq!(NoteKind::parse_strict("generic").unwrap(), NoteKind::Generic);
+        assert_eq!(
+            NoteKind::parse_strict("generic").unwrap(),
+            NoteKind::Generic
+        );
         assert_eq!(NoteKind::parse_strict("book").unwrap(), NoteKind::Book);
         assert_eq!(NoteKind::parse_strict("paper").unwrap(), NoteKind::Paper);
-        assert_eq!(NoteKind::parse_strict("transcript").unwrap(), NoteKind::Transcript);
-        assert_eq!(NoteKind::parse_strict("article").unwrap(), NoteKind::Article);
+        assert_eq!(
+            NoteKind::parse_strict("transcript").unwrap(),
+            NoteKind::Transcript
+        );
+        assert_eq!(
+            NoteKind::parse_strict("article").unwrap(),
+            NoteKind::Article
+        );
     }
 
     #[test]
@@ -308,7 +320,10 @@ mod tests {
         assert_eq!(format!("{}", NoteKind::Paper), "paper");
         assert_eq!(format!("{}", NoteKind::Transcript), "transcript");
         assert_eq!(format!("{}", NoteKind::Article), "article");
-        assert_eq!(format!("{}", NoteKind::Other("custom".to_string())), "custom");
+        assert_eq!(
+            format!("{}", NoteKind::Other("custom".to_string())),
+            "custom"
+        );
     }
 
     // ===========================================
@@ -317,11 +332,26 @@ mod tests {
 
     #[test]
     fn serde_serialize_known_kinds() {
-        assert_eq!(serde_yaml::to_string(&NoteKind::Generic).unwrap().trim(), "generic");
-        assert_eq!(serde_yaml::to_string(&NoteKind::Book).unwrap().trim(), "book");
-        assert_eq!(serde_yaml::to_string(&NoteKind::Paper).unwrap().trim(), "paper");
-        assert_eq!(serde_yaml::to_string(&NoteKind::Transcript).unwrap().trim(), "transcript");
-        assert_eq!(serde_yaml::to_string(&NoteKind::Article).unwrap().trim(), "article");
+        assert_eq!(
+            serde_yaml::to_string(&NoteKind::Generic).unwrap().trim(),
+            "generic"
+        );
+        assert_eq!(
+            serde_yaml::to_string(&NoteKind::Book).unwrap().trim(),
+            "book"
+        );
+        assert_eq!(
+            serde_yaml::to_string(&NoteKind::Paper).unwrap().trim(),
+            "paper"
+        );
+        assert_eq!(
+            serde_yaml::to_string(&NoteKind::Transcript).unwrap().trim(),
+            "transcript"
+        );
+        assert_eq!(
+            serde_yaml::to_string(&NoteKind::Article).unwrap().trim(),
+            "article"
+        );
     }
 
     #[test]
@@ -396,7 +426,10 @@ mod tests {
     fn equality_works_correctly() {
         assert_eq!(NoteKind::Book, NoteKind::Book);
         assert_ne!(NoteKind::Book, NoteKind::Paper);
-        assert_ne!(NoteKind::Other("a".to_string()), NoteKind::Other("b".to_string()));
+        assert_ne!(
+            NoteKind::Other("a".to_string()),
+            NoteKind::Other("b".to_string())
+        );
         assert_eq!(
             NoteKind::Other("same".to_string()),
             NoteKind::Other("same".to_string())

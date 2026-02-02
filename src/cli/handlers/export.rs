@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use serde::Serialize;
 
 use crate::cli::{ExportArgs, ExportFormat, output::OutputFormat};
@@ -95,7 +95,9 @@ fn handle_single_export(
                         output_path.join(format!("{}.html", slug))
                     } else {
                         // It's a file path - ensure parent directory exists
-                        if let Some(parent) = output_path.parent().filter(|p| !p.as_os_str().is_empty()) {
+                        if let Some(parent) =
+                            output_path.parent().filter(|p| !p.as_os_str().is_empty())
+                        {
                             std::fs::create_dir_all(parent)?;
                         }
                         output_path.clone()

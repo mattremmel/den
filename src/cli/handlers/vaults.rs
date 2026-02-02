@@ -2,9 +2,9 @@
 
 use anyhow::Result;
 
+use crate::cli::VaultsArgs;
 use crate::cli::config::Config;
 use crate::cli::output::OutputFormat;
-use crate::cli::VaultsArgs;
 
 /// Handle the vaults command - list configured vaults or set default.
 pub fn handle_vaults(args: &VaultsArgs, config: &Config) -> Result<()> {

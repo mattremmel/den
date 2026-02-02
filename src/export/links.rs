@@ -304,7 +304,8 @@ mod tests {
         let options = LinkResolverOptions::default();
         let resolver = LinkResolver::from_notes(&notes, &options);
 
-        let content = "See [First](01HQ4A2R9P) and [Second](01HQ5B3S0Q) and [external](https://example.com).";
+        let content =
+            "See [First](01HQ4A2R9P) and [Second](01HQ5B3S0Q) and [external](https://example.com).";
         let result = resolver.resolve(content);
 
         assert_eq!(result.resolved, 2);
@@ -370,9 +371,11 @@ mod tests {
         let content = "See [API Design Notes](01HQ4A2R9P) for details.";
         let result = resolver.resolve(content);
 
-        assert!(result
-            .content
-            .contains("[API Design Notes](target-note.html)"));
+        assert!(
+            result
+                .content
+                .contains("[API Design Notes](target-note.html)")
+        );
     }
 
     #[test]

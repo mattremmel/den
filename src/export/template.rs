@@ -3,7 +3,7 @@
 use std::path::Path;
 
 use anyhow::Result;
-use minijinja::{context, Environment};
+use minijinja::{Environment, context};
 
 use crate::domain::Note;
 use crate::export::html::markdown_to_html;
@@ -225,7 +225,11 @@ mod tests {
         let body = "Content here";
 
         let mut temp = NamedTempFile::new().unwrap();
-        writeln!(temp, "<!DOCTYPE html><html><body>CUSTOM: {{{{ title }}}} - {{{{ content }}}}</body></html>").unwrap();
+        writeln!(
+            temp,
+            "<!DOCTYPE html><html><body>CUSTOM: {{{{ title }}}} - {{{{ content }}}}</body></html>"
+        )
+        .unwrap();
 
         let options = RenderOptions {
             template_path: Some(temp.path()),

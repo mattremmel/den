@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 
 /// Unified theme CSS with CSS custom properties for automatic light/dark mode.
 ///
@@ -1011,7 +1011,10 @@ pub fn get_theme_css(theme: Option<&str>) -> Result<String> {
             if path.exists() {
                 Ok(std::fs::read_to_string(path)?)
             } else {
-                Err(anyhow!("Unknown theme: '{}'. Use 'default', 'dark', or a path to a CSS file.", path.display()))
+                Err(anyhow!(
+                    "Unknown theme: '{}'. Use 'default', 'dark', or a path to a CSS file.",
+                    path.display()
+                ))
             }
         }
     }

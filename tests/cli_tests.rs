@@ -2442,8 +2442,10 @@ mod export_tests {
         env.add_note(&note);
         env.build_index().expect("Should build index");
 
-        let template =
-            env.write_file("custom.html", "<!DOCTYPE html><html><body>CUSTOM: {{ title }} - {{ content }}</body></html>");
+        let template = env.write_file(
+            "custom.html",
+            "<!DOCTYPE html><html><body>CUSTOM: {{ title }} - {{ content }}</body></html>",
+        );
 
         env.cmd()
             .export("Template Test")
@@ -2912,8 +2914,8 @@ mod export_tests {
     fn test_export_marks_broken_links() {
         let env = TestEnv::new();
 
-        let note = TestNote::new("Broken Link Note")
-            .body("See [Missing](01HZZZZZZZZZ) for details.");
+        let note =
+            TestNote::new("Broken Link Note").body("See [Missing](01HZZZZZZZZZ) for details.");
         env.add_note(&note);
         env.build_index().expect("Should build index");
 
@@ -2944,8 +2946,7 @@ mod export_tests {
             .assert()
             .success();
 
-        let source_content =
-            std::fs::read_to_string(output_dir.join("bulk-source.html")).unwrap();
+        let source_content = std::fs::read_to_string(output_dir.join("bulk-source.html")).unwrap();
         assert!(source_content.contains("bulk-target.html"));
     }
 }

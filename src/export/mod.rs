@@ -10,7 +10,7 @@ pub mod template;
 mod theme;
 
 pub use html::markdown_to_html;
-pub use links::{BrokenLinkHandling, LinkResolver, LinkResolverOptions, LinkResolution};
+pub use links::{BrokenLinkHandling, LinkResolution, LinkResolver, LinkResolverOptions};
 pub use site::{SiteConfig, SiteResult, generate_site};
-pub use template::{render_note_html, DEFAULT_NOTE_TEMPLATE};
-pub use theme::{get_theme_css, THEME_DARK, THEME_DEFAULT};
+pub use template::{DEFAULT_NOTE_TEMPLATE, render_note_html};
+pub use theme::{THEME_DARK, THEME_DEFAULT, get_theme_css};
