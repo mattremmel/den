@@ -28,6 +28,9 @@ notes completions bash > ~/.local/share/bash-completion/completions/notes
 # Zsh (add to fpath directory)
 notes completions zsh > ~/.zfunc/_notes
 
+# Zsh (dynamic, add to ~/.zshrc)
+eval "$(notes completions zsh)"
+
 # Fish
 notes completions fish > ~/.config/fish/completions/notes.fish
 ```
