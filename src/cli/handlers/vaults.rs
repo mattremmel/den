@@ -5,6 +5,7 @@ use anyhow::Result;
 use crate::cli::VaultsArgs;
 use crate::cli::config::Config;
 use crate::cli::output::OutputFormat;
+use crate::infra::expand_tilde;
 
 /// Handle the vaults command - list configured vaults or set default.
 pub fn handle_vaults(args: &VaultsArgs, config: &Config) -> Result<()> {
@@ -39,7 +40,9 @@ pub fn handle_vaults(args: &VaultsArgs, config: &Config) -> Result<()> {
                     } else {
                         ""
                     };
-                    println!("{}{}: {}", name, marker, path.display());
+                    // Display expanded path for clarity
+                    let expanded = expand_tilde(path).unwrap_or_else(|_| path.to_path_buf());
+                    println!("{}{}: {}", name, marker, expanded.display());
                 }
             }
         }
@@ -47,9 +50,11 @@ pub fn handle_vaults(args: &VaultsArgs, config: &Config) -> Result<()> {
             let output: Vec<serde_json::Value> = vaults
                 .iter()
                 .map(|(name, path)| {
+                    // Output expanded path in JSON
+                    let expanded = expand_tilde(path).unwrap_or_else(|_| path.to_path_buf());
                     serde_json::json!({
                         "name": name,
-                        "path": path.to_string_lossy(),
+                        "path": expanded.to_string_lossy(),
                         "default": Some(*name) == default_vault,
                     })
                 })

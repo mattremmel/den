@@ -12,7 +12,7 @@ use crate::export::{
     template::RenderOptions,
 };
 use crate::index::{IndexRepository, IndexedNote, SqliteIndex};
-use crate::infra::read_note;
+use crate::infra::{expand_tilde, read_note};
 
 use super::index_db_path;
 use super::resolve::{ResolveResult, print_ambiguous_notes, resolve_note};
@@ -32,12 +32,27 @@ pub struct ExportResult {
 
 /// Handle the `export` command.
 pub fn handle_export(args: &ExportArgs, notes_dir: &Path) -> Result<()> {
+    // Expand tilde in output and template paths
+    let expanded_output = args.output.as_ref().map(|p| expand_tilde(p)).transpose()?;
+    let expanded_template = args
+        .template
+        .as_ref()
+        .map(|p| expand_tilde(p))
+        .transpose()?;
+
+    // Create modified args with expanded paths
+    let expanded_args = ExportArgs {
+        output: expanded_output,
+        template: expanded_template,
+        ..args.clone()
+    };
+
     let db_path = index_db_path(notes_dir);
     let index = SqliteIndex::open(&db_path)?;
 
-    match (&args.note, args.all) {
-        (Some(query), false) => handle_single_export(args, &index, notes_dir, query),
-        (None, true) => handle_bulk_export(args, &index, notes_dir),
+    match (&expanded_args.note, expanded_args.all) {
+        (Some(query), false) => handle_single_export(&expanded_args, &index, notes_dir, query),
+        (None, true) => handle_bulk_export(&expanded_args, &index, notes_dir),
         _ => unreachable!(),
     }
 }

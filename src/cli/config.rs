@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use crate::infra::expand_tilde;
+
 /// Application configuration loaded from config file.
 #[derive(Debug, Default, Deserialize, Serialize)]
 pub struct Config {
@@ -51,12 +53,13 @@ impl Config {
 
     /// Returns the path to the config file.
     ///
-    /// Default: `~/.config/notes/config.toml`
+    /// Uses XDG Base Directory Specification on all platforms:
+    /// - `$XDG_CONFIG_HOME/notes/config.toml` (if set)
+    /// - `~/.config/notes/config.toml` (XDG default)
     pub fn config_path() -> PathBuf {
-        dirs::config_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("notes")
-            .join("config.toml")
+        cross_xdg::BaseDirs::new()
+            .map(|dirs| dirs.config_home().join("notes").join("config.toml"))
+            .unwrap_or_else(|_| PathBuf::from(".config/notes/config.toml"))
     }
 
     /// Resolve the notes directory, with CLI argument taking precedence.
@@ -81,6 +84,8 @@ impl Config {
     /// 3. `default_vault` config (vault name lookup)
     /// 4. `dir` config (legacy direct path)
     /// 5. Current working directory - lowest
+    ///
+    /// Tilde expansion is applied to all paths.
     pub fn resolve_notes_dir(
         &self,
         cli_dir: Option<&PathBuf>,
@@ -89,7 +94,7 @@ impl Config {
         // 1. CLI --dir takes highest precedence
         if let Some(dir) = cli_dir {
             return Ok(ResolvedDir {
-                path: dir.clone(),
+                path: expand_tilde(dir)?,
                 vault_name: None,
             });
         }
@@ -107,7 +112,7 @@ impl Config {
         // 4. Legacy dir config
         if let Some(ref dir) = self.dir {
             return Ok(ResolvedDir {
-                path: dir.clone(),
+                path: expand_tilde(dir)?,
                 vault_name: None,
             });
         }
@@ -120,10 +125,12 @@ impl Config {
     }
 
     /// Resolve a vault name to its path.
+    ///
+    /// Tilde expansion is applied to the vault path.
     pub fn resolve_vault(&self, name: &str) -> Result<ResolvedDir> {
         match self.vaults.get(name) {
             Some(path) => Ok(ResolvedDir {
-                path: path.clone(),
+                path: expand_tilde(path)?,
                 vault_name: Some(name.to_string()),
             }),
             None => {
@@ -431,5 +438,47 @@ mod tests {
         assert_eq!(vaults.len(), 2);
         assert_eq!(vaults[0].0, "personal");
         assert_eq!(vaults[1].0, "work");
+    }
+
+    // Tilde expansion tests
+
+    #[test]
+    fn resolve_notes_dir_expands_tilde_in_cli_dir() {
+        let config = Config::default();
+        let cli_dir = PathBuf::from("~/notes");
+        let resolved = config.resolve_notes_dir(Some(&cli_dir), None).unwrap();
+        assert!(resolved.path.is_absolute());
+        assert!(!resolved.path.to_string_lossy().contains('~'));
+        assert!(resolved.path.ends_with("notes"));
+    }
+
+    #[test]
+    fn resolve_notes_dir_expands_tilde_in_legacy_dir() {
+        let config = Config {
+            dir: Some(PathBuf::from("~/legacy/notes")),
+            editor: None,
+            default_vault: None,
+            vaults: HashMap::new(),
+        };
+        let resolved = config.resolve_notes_dir(None, None).unwrap();
+        assert!(resolved.path.is_absolute());
+        assert!(!resolved.path.to_string_lossy().contains('~'));
+        assert!(resolved.path.ends_with("notes"));
+    }
+
+    #[test]
+    fn resolve_vault_expands_tilde() {
+        let mut vaults = HashMap::new();
+        vaults.insert("home".to_string(), PathBuf::from("~/my-notes"));
+        let config = Config {
+            dir: None,
+            editor: None,
+            default_vault: None,
+            vaults,
+        };
+        let resolved = config.resolve_vault("home").unwrap();
+        assert!(resolved.path.is_absolute());
+        assert!(!resolved.path.to_string_lossy().contains('~'));
+        assert!(resolved.path.ends_with("my-notes"));
     }
 }

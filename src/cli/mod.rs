@@ -396,7 +396,7 @@ pub enum ExportFormat {
 }
 
 /// Arguments for the `export` command
-#[derive(Parser, Debug)]
+#[derive(Parser, Debug, Clone)]
 pub struct ExportArgs {
     /// Note to export (ID prefix or title). Required unless --all is used.
     #[arg(required_unless_present = "all")]
