@@ -220,8 +220,8 @@ pub fn handle_new(args: &NewArgs, notes_dir: &Path, config: &Config) -> Result<(
     );
     println!("  {}", file_path.display());
 
-    // Open in editor if requested
-    if args.edit {
+    // Open in editor by default (unless --no-edit)
+    if !args.no_edit {
         open_in_editor(&file_path, config)?;
         // Update modified timestamp after editing
         update_modified_timestamp(&file_path)?;

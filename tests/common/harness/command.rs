@@ -98,8 +98,9 @@ impl DenCommand {
     }
 
     /// Configures for the `new` command to create a note.
+    /// Uses --no-edit to skip opening editor in tests.
     pub fn new_note(self, title: &str) -> Self {
-        self.args(["new", title])
+        self.args(["new", title, "--no-edit"])
     }
 
     /// Configures for the `edit` command.

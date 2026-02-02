@@ -204,9 +204,9 @@ pub struct NewArgs {
     #[arg(long, requires = "into")]
     pub mkdir: bool,
 
-    /// Open in editor after creation
-    #[arg(short, long)]
-    pub edit: bool,
+    /// Skip opening editor after creation
+    #[arg(long)]
+    pub no_edit: bool,
 }
 
 /// Arguments for the `show` command

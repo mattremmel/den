@@ -446,7 +446,7 @@ mod handle_new_tests {
             kind: None,
             into: None,
             mkdir: false,
-            edit: false,
+            no_edit: true,
         }
     }
 
@@ -501,7 +501,7 @@ mod handle_new_tests {
             kind: None,
             into: None,
             mkdir: false,
-            edit: false,
+            no_edit: true,
         };
         let config = test_config();
 
@@ -551,7 +551,7 @@ mod handle_new_tests {
             kind: None,
             into: None,
             mkdir: false,
-            edit: false,
+            no_edit: true,
         };
         let config = test_config();
 
@@ -570,7 +570,7 @@ mod handle_new_tests {
             kind: None,
             into: None,
             mkdir: false,
-            edit: false,
+            no_edit: true,
         };
         let config = test_config();
 
