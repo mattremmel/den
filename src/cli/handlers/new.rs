@@ -201,8 +201,11 @@ pub fn handle_new(args: &NewArgs, notes_dir: &Path, config: &Config) -> Result<(
     // Construct file path
     let file_path = target_dir.join(&result.filename);
 
-    // Read body from STDIN if --stdin flag is set
-    let body = if args.stdin {
+    // Read body from file or STDIN if specified
+    let body = if let Some(ref import_path) = args.file {
+        std::fs::read_to_string(import_path)
+            .with_context(|| format!("failed to read file: {}", import_path.display()))?
+    } else if args.stdin {
         let mut buf = String::new();
         std::io::stdin()
             .read_to_string(&mut buf)
@@ -232,8 +235,8 @@ pub fn handle_new(args: &NewArgs, notes_dir: &Path, config: &Config) -> Result<(
     );
     println!("  {}", file_path.display());
 
-    // Open in editor by default (unless --no-edit or --stdin)
-    if !args.no_edit && !args.stdin {
+    // Open in editor by default (unless --no-edit, --stdin, or --file)
+    if !args.no_edit && !args.stdin && args.file.is_none() {
         open_in_editor(&file_path, config)?;
         // Update modified timestamp after editing
         update_modified_timestamp(&file_path)?;

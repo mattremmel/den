@@ -211,6 +211,10 @@ pub struct NewArgs {
     /// Read note body from STDIN
     #[arg(long)]
     pub stdin: bool,
+
+    /// Import content from an existing markdown file
+    #[arg(long, conflicts_with = "stdin")]
+    pub file: Option<PathBuf>,
 }
 
 /// Arguments for the `show` command

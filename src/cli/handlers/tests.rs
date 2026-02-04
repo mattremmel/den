@@ -448,6 +448,7 @@ mod handle_new_tests {
             mkdir: false,
             no_edit: true,
             stdin: false,
+            file: None,
         }
     }
 
@@ -504,6 +505,7 @@ mod handle_new_tests {
             mkdir: false,
             no_edit: true,
             stdin: false,
+            file: None,
         };
         let config = test_config();
 
@@ -555,6 +557,7 @@ mod handle_new_tests {
             mkdir: false,
             no_edit: true,
             stdin: false,
+            file: None,
         };
         let config = test_config();
 
@@ -575,6 +578,7 @@ mod handle_new_tests {
             mkdir: false,
             no_edit: true,
             stdin: false,
+            file: None,
         };
         let config = test_config();
 
