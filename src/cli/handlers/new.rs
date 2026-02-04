@@ -2,6 +2,7 @@
 
 use anyhow::{Context, Result, bail};
 use chrono::Utc;
+use std::io::Read;
 use std::path::Path;
 use std::process::Command;
 
@@ -200,8 +201,19 @@ pub fn handle_new(args: &NewArgs, notes_dir: &Path, config: &Config) -> Result<(
     // Construct file path
     let file_path = target_dir.join(&result.filename);
 
+    // Read body from STDIN if --stdin flag is set
+    let body = if args.stdin {
+        let mut buf = String::new();
+        std::io::stdin()
+            .read_to_string(&mut buf)
+            .with_context(|| "failed to read from stdin")?;
+        buf
+    } else {
+        String::new()
+    };
+
     // Write the note file
-    write_note(&file_path, &result.note, "")
+    write_note(&file_path, &result.note, &body)
         .with_context(|| format!("failed to write note to {}", file_path.display()))?;
 
     // Update index (create if needed)
@@ -220,8 +232,8 @@ pub fn handle_new(args: &NewArgs, notes_dir: &Path, config: &Config) -> Result<(
     );
     println!("  {}", file_path.display());
 
-    // Open in editor by default (unless --no-edit)
-    if !args.no_edit {
+    // Open in editor by default (unless --no-edit or --stdin)
+    if !args.no_edit && !args.stdin {
         open_in_editor(&file_path, config)?;
         // Update modified timestamp after editing
         update_modified_timestamp(&file_path)?;

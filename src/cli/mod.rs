@@ -207,6 +207,10 @@ pub struct NewArgs {
     /// Skip opening editor after creation
     #[arg(long)]
     pub no_edit: bool,
+
+    /// Read note body from STDIN
+    #[arg(long)]
+    pub stdin: bool,
 }
 
 /// Arguments for the `show` command
