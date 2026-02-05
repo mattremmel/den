@@ -44,6 +44,8 @@ impl SqliteIndex {
 
         let conn = Connection::open(path)?;
         conn.execute_batch("PRAGMA foreign_keys = ON;")?;
+        conn.execute_batch("PRAGMA journal_mode = WAL;")?;
+        conn.execute_batch("PRAGMA busy_timeout = 5000;")?;
         create_schema(&conn)?;
         Ok(Self { conn })
     }

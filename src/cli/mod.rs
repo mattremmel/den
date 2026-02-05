@@ -192,9 +192,17 @@ pub struct NewArgs {
     #[arg(short = 'D', long)]
     pub desc: Option<String>,
 
+    /// Alias for the note (can be specified multiple times)
+    #[arg(short = 'a', long = "alias", action = ArgAction::Append)]
+    pub aliases: Vec<String>,
+
     /// Note kind (generic, book, paper, transcript, article)
     #[arg(short = 'k', long)]
     pub kind: Option<String>,
+
+    /// Kind-specific metadata as JSON string
+    #[arg(long)]
+    pub metadata: Option<String>,
 
     /// Subdirectory within vault to place the note
     #[arg(long)]
@@ -215,6 +223,10 @@ pub struct NewArgs {
     /// Import content from an existing markdown file
     #[arg(long, conflicts_with = "stdin")]
     pub file: Option<PathBuf>,
+
+    /// Output format
+    #[arg(short = 'f', long, value_enum, default_value_t = OutputFormat::Human)]
+    pub format: OutputFormat,
 }
 
 /// Arguments for the `show` command

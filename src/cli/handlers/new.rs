@@ -9,7 +9,8 @@ use std::process::Command;
 use super::index_db_path;
 use crate::cli::NewArgs;
 use crate::cli::config::Config;
-use crate::domain::{Note, NoteId, NoteKind, Tag, Topic};
+use crate::cli::output::{NewNoteListing, Output, OutputFormat};
+use crate::domain::{Note, NoteId, NoteKind, NoteMetadata, Tag, Topic};
 use crate::index::{IndexBuilder, SqliteIndex};
 use crate::infra::{generate_filename, read_note, write_note};
 
@@ -37,7 +38,9 @@ pub fn create_new_note(
     description: Option<&str>,
     topic_strs: &[String],
     tag_strs: &[String],
+    alias_strs: &[String],
     kind_str: Option<&str>,
+    metadata_json: Option<&str>,
 ) -> Result<NewNoteResult> {
     // Validate title
     let trimmed_title = title.trim();
@@ -68,6 +71,18 @@ pub fn create_new_note(
         NoteKind::default()
     };
 
+    // Parse metadata JSON if provided
+    let metadata = if let Some(json_str) = metadata_json {
+        let value: serde_json::Value = serde_json::from_str(json_str)
+            .with_context(|| format!("invalid metadata JSON: {}", json_str))?;
+        Some(
+            NoteMetadata::from_value(&kind, value)
+                .with_context(|| "failed to parse metadata for kind")?,
+        )
+    } else {
+        None
+    };
+
     // Generate ID and timestamps
     let id = NoteId::new();
     let now = Utc::now();
@@ -76,8 +91,10 @@ pub fn create_new_note(
     let note = Note::builder(id.clone(), trimmed_title, now, now)
         .description(description.map(|s| s.to_string()))
         .topics(topics)
+        .aliases(alias_strs.to_vec())
         .tags(tags)
         .kind(kind)
+        .metadata(metadata)
         .build()
         .with_context(|| "failed to create note")?;
 
@@ -139,6 +156,50 @@ pub(crate) fn update_modified_timestamp(path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Strips YAML frontmatter from content if present.
+///
+/// Detects the `---` delimited frontmatter block at the start of the content
+/// and removes it, returning only the body.
+fn strip_frontmatter(content: &str) -> &str {
+    let trimmed = content.trim_start();
+    if !trimmed.starts_with("---") {
+        return content;
+    }
+
+    // Find the closing delimiter after the opening `---`
+    let after_opening = &trimmed[3..];
+    // Skip to next line after opening ---
+    let rest = match after_opening.find('\n') {
+        Some(pos) => &after_opening[pos + 1..],
+        None => return content, // Only `---` with no newline, not valid frontmatter
+    };
+
+    // Find the closing `---`
+    for (i, line) in rest.lines().enumerate() {
+        if line.trim() == "---" {
+            // Calculate byte offset past the closing delimiter line
+            let mut offset = 0;
+            for (j, l) in rest.lines().enumerate() {
+                if j == i {
+                    offset += l.len();
+                    // Skip past the newline after closing ---
+                    let remaining = &rest[offset..];
+                    if let Some(stripped) = remaining.strip_prefix('\n') {
+                        return stripped;
+                    } else if let Some(stripped) = remaining.strip_prefix("\r\n") {
+                        return stripped;
+                    }
+                    return remaining;
+                }
+                offset += l.len() + 1; // +1 for newline
+            }
+        }
+    }
+
+    // No closing delimiter found, return original
+    content
+}
+
 pub fn handle_new(args: &NewArgs, notes_dir: &Path, config: &Config) -> Result<()> {
     // Validate that the notes directory exists
     if !notes_dir.exists() {
@@ -195,7 +256,9 @@ pub fn handle_new(args: &NewArgs, notes_dir: &Path, config: &Config) -> Result<(
         args.desc.as_deref(),
         &args.topics,
         &args.tags,
+        &args.aliases,
         args.kind.as_deref(),
+        args.metadata.as_deref(),
     )?;
 
     // Construct file path
@@ -203,8 +266,9 @@ pub fn handle_new(args: &NewArgs, notes_dir: &Path, config: &Config) -> Result<(
 
     // Read body from file or STDIN if specified
     let body = if let Some(ref import_path) = args.file {
-        std::fs::read_to_string(import_path)
-            .with_context(|| format!("failed to read file: {}", import_path.display()))?
+        let raw = std::fs::read_to_string(import_path)
+            .with_context(|| format!("failed to read file: {}", import_path.display()))?;
+        strip_frontmatter(&raw).to_string()
     } else if args.stdin {
         let mut buf = String::new();
         std::io::stdin()
@@ -228,12 +292,31 @@ pub fn handle_new(args: &NewArgs, notes_dir: &Path, config: &Config) -> Result<(
     }
 
     // Print success message
-    println!(
-        "Created: {} [{}]",
-        result.note.title(),
-        result.note.id().prefix()
-    );
-    println!("  {}", file_path.display());
+    match args.format {
+        OutputFormat::Json => {
+            let listing = NewNoteListing {
+                id: result.note.id().to_string(),
+                title: result.note.title().to_string(),
+                path: file_path.display().to_string(),
+            };
+            println!(
+                "{}",
+                serde_json::to_string(&Output::new(listing))
+                    .with_context(|| "failed to serialize output")?
+            );
+        }
+        OutputFormat::Paths => {
+            println!("{}", file_path.display());
+        }
+        OutputFormat::Human => {
+            println!(
+                "Created: {} [{}]",
+                result.note.title(),
+                result.note.id().prefix()
+            );
+            println!("  {}", file_path.display());
+        }
+    }
 
     // Open in editor by default (unless --no-edit, --stdin, or --file)
     if !args.no_edit && !args.stdin && args.file.is_none() {
@@ -249,4 +332,37 @@ pub fn handle_new(args: &NewArgs, notes_dir: &Path, config: &Config) -> Result<(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn strip_frontmatter_removes_yaml() {
+        let content = "---\ntitle: Test\ntags: [a]\n---\nBody content here";
+        let result = strip_frontmatter(content);
+        assert_eq!(result, "Body content here");
+    }
+
+    #[test]
+    fn strip_frontmatter_preserves_content_without_frontmatter() {
+        let content = "Just some plain text\nwith multiple lines";
+        let result = strip_frontmatter(content);
+        assert_eq!(result, content);
+    }
+
+    #[test]
+    fn strip_frontmatter_handles_no_closing_delimiter() {
+        let content = "---\ntitle: Test\nno closing delimiter";
+        let result = strip_frontmatter(content);
+        assert_eq!(result, content);
+    }
+
+    #[test]
+    fn strip_frontmatter_handles_empty_body() {
+        let content = "---\ntitle: Test\n---\n";
+        let result = strip_frontmatter(content);
+        assert_eq!(result, "");
+    }
 }

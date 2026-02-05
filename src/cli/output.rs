@@ -59,6 +59,14 @@ pub struct RelListing {
     pub count: Option<usize>,
 }
 
+/// Output for a newly created note.
+#[derive(Debug, Serialize)]
+pub struct NewNoteListing {
+    pub id: String,
+    pub title: String,
+    pub path: String,
+}
+
 /// A search result in listing output.
 #[derive(Debug, Serialize)]
 pub struct SearchListing {
